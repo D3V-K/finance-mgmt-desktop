@@ -87,6 +87,42 @@
       ]
     },
     {
+      "id": "category-tree-archive-and-used-type",
+      "steps": [
+        {"id": "root", "method": "POST", "path": "/categories", "body": {"name": "Food", "type": "expense"}, "status": 201},
+        {"id": "child", "method": "POST", "path": "/categories", "body": {"name": "Groceries", "type": "expense", "parent_id": "$root.id"}, "status": 201, "expect": {"parent_id": "$root.id"}},
+        {"id": "wrong-type", "method": "POST", "path": "/categories", "body": {"name": "Salary", "type": "income", "parent_id": "$root.id"}, "status": 400},
+        {"id": "cycle", "method": "PUT", "path": "/categories/$root.id", "body": {"parent_id": "$child.id"}, "status": 400},
+        {"id": "tree", "method": "GET", "path": "/categories/tree", "status": 200, "expect": {"0.id": "$root.id", "0.children.0.id": "$child.id"}},
+        {"id": "bank", "method": "POST", "path": "/accounts", "body": {"name": "Bank", "kind": "BANK"}, "status": 201},
+        {"id": "opening", "method": "PUT", "path": "/accounts/$bank.id/opening-balance", "body": {"amount": 1000, "as_of_date": "2026-01-01"}, "status": 200},
+        {"id": "expense", "method": "POST", "path": "/financial-events", "body": {"kind": "EXPENSE", "amount": 100, "account_id": "$bank.id", "category_id": "$child.id", "occurred_on": "2026-01-02", "effective_date": "2026-01-02"}, "status": 201},
+        {"id": "type-guard", "method": "PUT", "path": "/categories/$child.id", "body": {"type": "income"}, "status": 409},
+        {"id": "delete-guard", "method": "DELETE", "path": "/categories/$root.id", "status": 409},
+        {"id": "archive", "method": "POST", "path": "/categories/$root.id/archive", "status": 200},
+        {"id": "active", "method": "GET", "path": "/categories", "status": 200, "expect": {"total": 1, "items.0.id": "$child.id"}},
+        {"id": "history", "method": "GET", "path": "/categories?include_archived=true", "status": 200, "expect": {"total": 2}},
+        {"id": "restore", "method": "POST", "path": "/categories/$root.id/restore", "status": 200, "expect": {"archived_at": null}},
+        {"id": "same-id", "method": "GET", "path": "/categories/tree", "status": 200, "expect": {"0.id": "$root.id", "0.children.0.id": "$child.id"}}
+      ]
+    },
+    {
+      "id": "opening-revision-and-before-start",
+      "steps": [
+        {"id": "card", "method": "POST", "path": "/accounts", "body": {"name": "Card", "kind": "CREDIT_CARD"}, "status": 201},
+        {"id": "unknown", "method": "GET", "path": "/accounts/$card.id/balance?as_of_date=2026-01-02", "status": 200, "expect": {"balance": null, "amount_owed": null, "status": "unavailable"}},
+        {"id": "first", "method": "PUT", "path": "/accounts/$card.id/opening-balance", "body": {"amount": -20000, "as_of_date": "2026-01-03"}, "status": 200, "expect": {"revision": 1}},
+        {"id": "earlier", "method": "GET", "path": "/accounts/$card.id/balance?as_of_date=2026-01-02", "status": 200, "expect": {"balance": null, "status": "unavailable"}},
+        {"id": "debt", "method": "GET", "path": "/accounts/$card.id/balance?as_of_date=2026-01-03", "status": 200, "expect": {"balance": -20000, "amount_owed": 20000, "credit_balance": 0}},
+        {"id": "correct", "method": "PUT", "path": "/accounts/$card.id/opening-balance", "body": {"amount": 500, "as_of_date": "2026-01-03", "reason": "Correction"}, "status": 200, "expect": {"revision": 2}},
+        {"id": "revisions", "method": "GET", "path": "/accounts/$card.id/opening-revisions", "status": 200, "expect": {"0.amount": -20000, "0.revision": 1, "1.amount": 500, "1.revision": 2}},
+        {"id": "credit", "method": "GET", "path": "/accounts/$card.id/balance?as_of_date=2026-01-03", "status": 200, "expect": {"balance": 500, "amount_owed": 0, "credit_balance": 500}},
+        {"id": "archive", "method": "PATCH", "path": "/accounts/$card.id", "body": {"archived": true}, "status": 200},
+        {"id": "blocked", "method": "PUT", "path": "/accounts/$card.id/opening-balance", "body": {"amount": 0, "as_of_date": "2026-01-03"}, "status": 409},
+        {"id": "audit-intact", "method": "GET", "path": "/accounts/$card.id/opening-revisions", "status": 200, "expect": {"1.amount": 500}}
+      ]
+    },
+    {
       "id": "cash-forecast-scenario-not-actual-income",
       "steps": [
         {"id": "bank", "method": "POST", "path": "/accounts", "body": {"name": "Settlement", "kind": "BANK"}, "status": 201},
