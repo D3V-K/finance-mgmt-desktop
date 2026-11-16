@@ -1,0 +1,108 @@
+{
+  "version": 1,
+  "units": "integer JPY",
+  "cases": [
+    {
+      "id": "core-card-refund-repayment-reversal",
+      "steps": [
+        {"id": "bank", "method": "POST", "path": "/accounts", "body": {"name": "Bank", "kind": "BANK"}, "status": 201, "expect": {"currency": "JPY"}},
+        {"id": "card", "method": "POST", "path": "/accounts", "body": {"name": "Card", "kind": "CREDIT_CARD"}, "status": 201},
+        {"id": "unknown", "method": "GET", "path": "/accounts/$card.id/balance?as_of_date=2026-01-02", "status": 200, "expect": {"balance": null, "status": "unavailable"}},
+        {"id": "bank-opening", "method": "PUT", "path": "/accounts/$bank.id/opening-balance", "body": {"amount": 100000, "as_of_date": "2026-01-01"}, "status": 200, "expect": {"revision": 1}},
+        {"id": "card-opening", "method": "PUT", "path": "/accounts/$card.id/opening-balance", "body": {"amount": 0, "as_of_date": "2026-01-01"}, "status": 200},
+        {"id": "food", "method": "POST", "path": "/categories", "body": {"name": "Food", "type": "expense"}, "status": 201},
+        {"id": "purchase", "method": "POST", "path": "/financial-events", "body": {"kind": "EXPENSE", "amount": 6000, "account_id": "$card.id", "category_id": "$food.id", "occurred_on": "2026-01-02", "effective_date": "2026-01-02", "idempotency_key": "v1-purchase"}, "status": 201, "expect": {"postings.0.delta": -6000, "date_basis": "known"}},
+        {"id": "replay", "method": "POST", "path": "/financial-events", "body": {"kind": "EXPENSE", "amount": 6000, "account_id": "$card.id", "category_id": "$food.id", "occurred_on": "2026-01-02", "effective_date": "2026-01-02", "idempotency_key": "v1-purchase"}, "status": 201, "expect": {"id": "$purchase.id"}},
+        {"id": "key-conflict", "method": "POST", "path": "/financial-events", "body": {"kind": "EXPENSE", "amount": 7000, "account_id": "$card.id", "category_id": "$food.id", "occurred_on": "2026-01-02", "effective_date": "2026-01-02", "idempotency_key": "v1-purchase"}, "status": 409},
+        {"id": "card-debt", "method": "GET", "path": "/accounts/$card.id/balance?as_of_date=2026-01-02", "status": 200, "expect": {"balance": -6000, "amount_owed": 6000, "credit_balance": 0, "status": "incomplete_legacy_mapping"}},
+        {"id": "refund", "method": "POST", "path": "/financial-events", "body": {"kind": "REFUND", "amount": 2000, "account_id": "$card.id", "original_event_id": "$purchase.id", "occurred_on": "2026-01-02", "effective_date": "2026-01-02"}, "status": 201, "expect": {"postings.0.delta": 2000, "original_event_id": "$purchase.id"}},
+        {"id": "over-refund", "method": "POST", "path": "/financial-events", "body": {"kind": "REFUND", "amount": 5000, "account_id": "$card.id", "original_event_id": "$purchase.id", "occurred_on": "2026-01-02", "effective_date": "2026-01-02"}, "status": 422},
+        {"id": "repayment", "method": "POST", "path": "/financial-events", "body": {"kind": "CARD_REPAYMENT", "amount": 4000, "account_id": "$bank.id", "destination_account_id": "$card.id", "occurred_on": "2026-01-02", "effective_date": "2026-01-02"}, "status": 201, "expect": {"postings": [{"account_id": "$bank.id", "delta": -4000, "effective_date": "2026-01-02"}, {"account_id": "$card.id", "delta": 4000, "effective_date": "2026-01-02"}]}},
+        {"id": "flow", "method": "GET", "path": "/reports/canonical-monthly", "status": 200, "expect": {"0.income": 0, "0.gross_spending": 6000, "0.refunds": 2000, "0.net_spending": 4000, "0.month": "2026-01-01"}},
+        {"id": "reverse-repayment", "method": "POST", "path": "/financial-events/$repayment.id/reverse", "status": 201, "expect": {"is_reversal": true, "reverses_event_id": "$repayment.id", "postings": [{"account_id": "$bank.id", "delta": 4000, "effective_date": "2026-01-02"}, {"account_id": "$card.id", "delta": -4000, "effective_date": "2026-01-02"}]}},
+        {"id": "bank-final", "method": "GET", "path": "/accounts/$bank.id/balance?as_of_date=2026-01-02", "status": 200, "expect": {"balance": 100000}},
+        {"id": "card-final", "method": "GET", "path": "/accounts/$card.id/balance?as_of_date=2026-01-02", "status": 200, "expect": {"balance": -4000, "amount_owed": 4000}}
+      ]
+    },
+    {
+      "id": "legacy-cutover-unknown-date",
+      "steps": [
+        {"id": "food", "method": "POST", "path": "/categories", "body": {"name": "Food", "type": "expense"}, "status": 201},
+        {"id": "bank", "method": "POST", "path": "/accounts", "body": {"name": "Bank", "kind": "BANK"}, "status": 201},
+        {"id": "card", "method": "POST", "path": "/accounts", "body": {"name": "Card", "kind": "CREDIT_CARD"}, "status": 201},
+        {"id": "old", "method": "POST", "path": "/transactions", "body": {"amount": 300, "category_id": "$food.id", "transaction_date": "2026-01-01", "account_type": "cash"}, "status": 201},
+        {"id": "recent", "method": "POST", "path": "/transactions", "body": {"amount": 500, "category_id": "$food.id", "transaction_date": "2026-01-02", "account_type": "cash"}, "status": 201},
+        {"id": "preview", "method": "POST", "path": "/ledger-cutovers/preview", "body": {"as_of_date": "2026-01-02", "openings": [{"account_id": "$bank.id", "amount": 10000}, {"account_id": "$card.id", "amount": -18000}], "transactions": [{"transaction_id": "$recent.id", "account_id": "$bank.id", "effective_date": "2026-01-02"}]}, "status": 200, "expect": {"legacy_transaction_count": 2, "unresolved_count": 0, "mapped_count": 1, "opening_total": -8000, "purchase_date_basis": "unknown_unless_confirmed"}},
+        {"id": "confirm", "method": "POST", "path": "/ledger-cutovers/confirm", "body": {"as_of_date": "2026-01-02", "openings": [{"account_id": "$bank.id", "amount": 10000}, {"account_id": "$card.id", "amount": -18000}], "transactions": [{"transaction_id": "$recent.id", "account_id": "$bank.id", "effective_date": "2026-01-02"}]}, "status": 200, "expect": {"unresolved_count": 0, "status": "confirmed"}},
+        {"id": "replay", "method": "POST", "path": "/ledger-cutovers/confirm", "body": {"as_of_date": "2026-01-02", "openings": [{"account_id": "$bank.id", "amount": 10000}, {"account_id": "$card.id", "amount": -18000}], "transactions": [{"transaction_id": "$recent.id", "account_id": "$bank.id", "effective_date": "2026-01-02"}]}, "status": 200, "expect": {"id": "$confirm.id"}},
+        {"id": "bank-balance", "method": "GET", "path": "/accounts/$bank.id/balance?as_of_date=2026-01-02", "status": 200, "expect": {"balance": 9500, "status": "complete"}},
+        {"id": "card-balance", "method": "GET", "path": "/accounts/$card.id/balance?as_of_date=2026-01-02", "status": 200, "expect": {"balance": -18000, "amount_owed": 18000}},
+        {"id": "mapped-history", "method": "GET", "path": "/financial-events?account_id=$bank.id", "status": 200, "expect": {"total": 1, "items.0.occurred_on": null, "items.0.date_basis": "legacy_recorded_date", "items.0.postings.0.effective_date": "2026-01-02"}},
+        {"id": "canonical", "method": "GET", "path": "/reports/canonical-monthly", "status": 200, "expect": {"": []}},
+        {"id": "legacy-monthly", "method": "GET", "path": "/reports/monthly", "status": 200, "expect": {"0.expense": 800}},
+        {"id": "readonly", "method": "POST", "path": "/transactions", "body": {"amount": 1, "category_id": "$food.id", "transaction_date": "2026-01-03", "account_type": "cash"}, "status": 409}
+      ]
+    },
+    {
+      "id": "card-schedule-reserve-forecast",
+      "steps": [
+        {"id": "bank", "method": "POST", "path": "/accounts", "body": {"name": "Settlement", "kind": "BANK"}, "status": 201},
+        {"id": "card", "method": "POST", "path": "/accounts", "body": {"name": "Card", "kind": "CREDIT_CARD"}, "status": 201},
+        {"id": "cutover", "method": "POST", "path": "/ledger-cutovers/confirm", "body": {"as_of_date": "2026-01-01", "openings": [{"account_id": "$bank.id", "amount": 100000}, {"account_id": "$card.id", "amount": 0}]}, "status": 200, "expect": {"unresolved_count": 0}},
+        {"id": "settings", "method": "PUT", "path": "/cards/$card.id/settings", "body": {"settlement_account_id": "$bank.id", "closing_day": 15, "payment_day": 27}, "status": 200},
+        {"id": "food", "method": "POST", "path": "/categories", "body": {"name": "Food", "type": "expense"}, "status": 201},
+        {"id": "purchase", "method": "POST", "path": "/financial-events", "body": {"kind": "EXPENSE", "amount": 24000, "account_id": "$card.id", "category_id": "$food.id", "occurred_on": "2026-01-02", "effective_date": "2026-01-02"}, "status": 201},
+        {"id": "schedule-1", "method": "POST", "path": "/cards/$card.id/schedules", "body": {"purchase_event_id": "$purchase.id", "principal_due": 8000, "due_date": "2026-02-27"}, "status": 201, "expect": {"outstanding": 8000}},
+        {"id": "schedule-2", "method": "POST", "path": "/cards/$card.id/schedules", "body": {"purchase_event_id": "$purchase.id", "principal_due": 8000, "due_date": "2026-03-27"}, "status": 201},
+        {"id": "schedule-3", "method": "POST", "path": "/cards/$card.id/schedules", "body": {"purchase_event_id": "$purchase.id", "principal_due": 8000, "due_date": "2026-04-27"}, "status": 201},
+        {"id": "over-allocate", "method": "POST", "path": "/cards/$card.id/schedules", "body": {"purchase_event_id": "$purchase.id", "principal_due": 1, "due_date": "2026-05-27"}, "status": 422},
+        {"id": "reserve", "method": "POST", "path": "/cards/$card.id/schedules/$schedule-1.id/reserve", "body": {"account_id": "$bank.id", "amount": 8000, "as_of_date": "2026-01-02"}, "status": 200},
+        {"id": "bank-after-earmark", "method": "GET", "path": "/accounts/$bank.id/balance?as_of_date=2026-01-02", "status": 200, "expect": {"balance": 100000}},
+        {"id": "repayment", "method": "POST", "path": "/financial-events", "body": {"kind": "CARD_REPAYMENT", "amount": 4000, "account_id": "$bank.id", "destination_account_id": "$card.id", "occurred_on": "2026-01-02", "effective_date": "2026-01-02"}, "status": 201},
+        {"id": "link-payment", "method": "POST", "path": "/cards/$card.id/schedules/$schedule-1.id/payments", "body": {"repayment_event_id": "$repayment.id", "amount": 4000}, "status": 200, "expect": {"outstanding": 4000, "funded_reserve": 4000}},
+        {"id": "cannot-reverse-linked", "method": "POST", "path": "/financial-events/$repayment.id/reverse", "status": 409},
+        {"id": "bank-after-payment", "method": "GET", "path": "/accounts/$bank.id/balance?as_of_date=2026-01-02", "status": 200, "expect": {"balance": 96000}},
+        {"id": "card-after-payment", "method": "GET", "path": "/accounts/$card.id/balance?as_of_date=2026-01-02", "status": 200, "expect": {"balance": -20000}},
+        {"id": "spending", "method": "GET", "path": "/reports/canonical-monthly", "status": 200, "expect": {"0.gross_spending": 24000, "0.net_spending": 24000}}
+      ]
+    },
+    {
+      "id": "position-valuation-and-reconciliation",
+      "steps": [
+        {"id": "bank", "method": "POST", "path": "/accounts", "body": {"name": "Bank", "kind": "BANK"}, "status": 201},
+        {"id": "broker", "method": "POST", "path": "/accounts", "body": {"name": "Broker", "kind": "BROKERAGE_CASH"}, "status": 201},
+        {"id": "card", "method": "POST", "path": "/accounts", "body": {"name": "Card", "kind": "CREDIT_CARD"}, "status": 201},
+        {"id": "cutover", "method": "POST", "path": "/ledger-cutovers/confirm", "body": {"as_of_date": "2026-01-01", "openings": [{"account_id": "$bank.id", "amount": 100000}, {"account_id": "$broker.id", "amount": 10000}, {"account_id": "$card.id", "amount": -20000}]}, "status": 200},
+        {"id": "valuation", "method": "POST", "path": "/investments/$broker.id/valuations", "body": {"as_of_date": "2026-01-01", "market_value": 50000}, "status": 201},
+        {"id": "starting-position", "method": "GET", "path": "/reports/financial-position?as_of_date=2026-01-01", "status": 200, "expect": {"net_worth": 140000, "brokerage_cash": 10000, "securities_value": 50000, "signed_card_balances": -20000}},
+        {"id": "contribute", "method": "POST", "path": "/financial-events", "body": {"kind": "TRANSFER", "amount": 8000, "account_id": "$bank.id", "destination_account_id": "$broker.id", "occurred_on": "2026-01-02", "effective_date": "2026-01-02"}, "status": 201},
+        {"id": "repay", "method": "POST", "path": "/financial-events", "body": {"kind": "CARD_REPAYMENT", "amount": 4000, "account_id": "$bank.id", "destination_account_id": "$card.id", "occurred_on": "2026-01-02", "effective_date": "2026-01-02"}, "status": 201},
+        {"id": "unchanged-position", "method": "GET", "path": "/reports/financial-position?as_of_date=2026-01-02", "status": 200, "expect": {"net_worth": 140000, "cumulative_contributions": 8000}},
+        {"id": "new-valuation", "method": "POST", "path": "/investments/$broker.id/valuations", "body": {"as_of_date": "2026-02-01", "market_value": 53000}, "status": 201},
+        {"id": "increased-position", "method": "GET", "path": "/reports/financial-position?as_of_date=2026-02-01", "status": 200, "expect": {"net_worth": 143000, "valuation_change": 3000, "investment_return": null}},
+        {"id": "holdings-change", "method": "POST", "path": "/investments/$broker.id/holdings-changes", "body": {"occurred_on": "2026-03-02", "note": "Holdings changed"}, "status": 201},
+        {"id": "stale-position", "method": "GET", "path": "/reports/financial-position?as_of_date=2026-03-31", "status": 200, "expect": {"net_worth": null, "coverage": "incomplete"}},
+        {"id": "reconcile", "method": "POST", "path": "/reconciliations", "body": {"account_id": "$bank.id", "period_start": "2026-01-03", "period_end": "2026-01-31", "statement_opening": 88000, "statement_closing": 87900}, "status": 201, "expect": {"difference": -100}},
+        {"id": "cannot-confirm", "method": "POST", "path": "/reconciliations/$reconcile.id/confirm", "status": 409}
+      ]
+    },
+    {
+      "id": "cash-forecast-scenario-not-actual-income",
+      "steps": [
+        {"id": "bank", "method": "POST", "path": "/accounts", "body": {"name": "Settlement", "kind": "BANK"}, "status": 201},
+        {"id": "card", "method": "POST", "path": "/accounts", "body": {"name": "Card", "kind": "CREDIT_CARD"}, "status": 201},
+        {"id": "cutover", "method": "POST", "path": "/ledger-cutovers/confirm", "body": {"as_of_date": "2026-01-01", "openings": [{"account_id": "$bank.id", "amount": 100000}, {"account_id": "$card.id", "amount": 0}]}, "status": 200},
+        {"id": "settings", "method": "PUT", "path": "/cards/$card.id/settings", "body": {"settlement_account_id": "$bank.id", "closing_day": 15, "payment_day": 27}, "status": 200},
+        {"id": "food", "method": "POST", "path": "/categories", "body": {"name": "Food", "type": "expense"}, "status": 201},
+        {"id": "purchase", "method": "POST", "path": "/financial-events", "body": {"kind": "EXPENSE", "amount": 45000, "account_id": "$card.id", "category_id": "$food.id", "occurred_on": "2026-01-02", "effective_date": "2026-01-02"}, "status": 201},
+        {"id": "due", "method": "POST", "path": "/cards/$card.id/schedules", "body": {"purchase_event_id": "$purchase.id", "principal_due": 45000, "due_date": "2026-01-27"}, "status": 201, "expect": {"outstanding": 45000}},
+        {"id": "salary", "method": "POST", "path": "/expected-cash-flows", "body": {"account_id": "$bank.id", "on_date": "2026-01-25", "amount": 300000, "label": "Salary", "certainty": "confirmed"}, "status": 201},
+        {"id": "bonus", "method": "POST", "path": "/expected-cash-flows", "body": {"account_id": "$bank.id", "on_date": "2026-01-25", "amount": 20000, "label": "Bonus", "certainty": "scenario_only"}, "status": 201},
+        {"id": "baseline", "method": "GET", "path": "/reports/cash-forecast?from=2026-01-24&to=2026-01-27", "status": 200, "expect_row": [{"collection": "days", "where": {"account_id": "$bank.id", "date": "2026-01-25"}, "field": "end_balance", "equals": 400000}, {"collection": "days", "where": {"account_id": "$bank.id", "date": "2026-01-27"}, "field": "end_balance", "equals": 355000}]},
+        {"id": "scenario", "method": "GET", "path": "/reports/cash-forecast?from=2026-01-24&to=2026-01-27&scenario=true", "status": 200, "expect_row": [{"collection": "days", "where": {"account_id": "$bank.id", "date": "2026-01-27"}, "field": "end_balance", "equals": 375000}]},
+        {"id": "available", "method": "GET", "path": "/reports/available-cash?as_of_date=2026-01-24&horizon=2026-01-27", "status": 200, "expect": {"accounts.0.raw_available": 55000}},
+        {"id": "actual-only", "method": "GET", "path": "/reports/canonical-monthly", "status": 200, "expect": {"0.income": 0, "0.gross_spending": 45000}}
+      ]
+    }
+  ]
+}
