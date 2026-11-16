@@ -1,0 +1,21 @@
+# Node dependencies and build
+node_modules/
+dist/
+
+# Rust build artifacts
+target/
+src-tauri/target/
+
+# Logs and environment
+*.log
+.DS_Store
+Thumbs.db
+
+# IDE and editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Vitest / testing
+coverage/
