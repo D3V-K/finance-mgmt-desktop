@@ -1,3 +1,16 @@
-pub mod system;
+//! Tauri command transport (#6). Handlers validate wire input, check that boot
+//! succeeded, and delegate to the domain/database layers; they own no financial
+//! rules. Every command registered here must also be listed in `build.rs` and
+//! granted in `capabilities/default.json`, or the renderer cannot invoke it.
 
-pub use system::{SystemInfo, get_storage_status, get_system_info};
+pub mod profile;
+pub mod system;
+pub mod wire;
+
+/// Single source for `build.rs` (ACL manifest) and the registration test.
+pub const COMMANDS: &[&str] = &[
+    "get_app_status",
+    "get_system_info",
+    "get_storage_status",
+    "get_profile",
+];

@@ -1,48 +1,78 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { AppError, SystemInfo, StorageStatus } from './types';
+import type { AppError, AppStatus, Profile, StorageStatus, SystemInfo } from './types';
+
+type Invoker = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
 
 export function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
-let mockInvoker: ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | null = null;
+let mockInvoker: Invoker | null = null;
 
-export function setMockInvoker(
-  invoker: ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | null
-): void {
+/** Test/dev hook. Production code paths always go through Tauri `invoke`. */
+export function setMockInvoker(invoker: Invoker | null): void {
   mockInvoker = invoker;
 }
 
-export async function runCommand<T>(
-  command: string,
-  args?: Record<string, unknown>
-): Promise<T> {
+export function isAppError(value: unknown): value is AppError {
+  return (
+    !!value &&
+    typeof value === 'object' &&
+    typeof (value as AppError).code === 'string' &&
+    typeof (value as AppError).category === 'string'
+  );
+}
+
+/**
+ * Normalizes non-AppError rejections (ACL denial, malformed arguments). The raw
+ * text can echo argument values, so it is never shown to the user.
+ */
+export function toAppError(err: unknown): AppError {
+  if (isAppError(err)) return err;
+  const raw = typeof err === 'string' ? err : '';
+  if (raw.includes('invalid args')) {
+    return {
+      code: 'INVALID_REQUEST',
+      message: 'The request was not in the expected format.',
+      category: 'validation',
+    };
+  }
+  return {
+    code: 'COMMAND_FAILED',
+    message: 'The action could not be completed.',
+    category: 'internal',
+  };
+}
+
+/** Browser-only dev preview (`npm run dev` outside Tauri). Never used in a build. */
+const devFallback: Record<string, () => unknown> = {
+  get_app_status: () => ({ state: 'ready', error: null }) satisfies AppStatus,
+  get_system_info: () => ({ appVersion: '0.1.0-dev', osTarget: 'browser-dev' }) satisfies SystemInfo,
+  get_storage_status: () =>
+    ({ status: 'ready', databasePath: 'dev-preview', isWalEnabled: true, migrationVersion: 0 }) satisfies StorageStatus,
+  get_profile: () => ({ timeZone: 'Asia/Tokyo', today: tokyoToday() }) satisfies Profile,
+};
+
+function tokyoToday(): string {
+  // en-CA formats as YYYY-MM-DD.
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tokyo' }).format(new Date());
+}
+
+export async function runCommand<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (mockInvoker) {
-    return (await mockInvoker(command, args)) as T;
+    try {
+      return (await mockInvoker(command, args)) as T;
+    } catch (err) {
+      throw toAppError(err);
+    }
   }
 
   if (!isTauri()) {
-    // Development/test mock fallback when running outside Tauri webview
-    if (command === 'get_system_info') {
-      return {
-        appVersion: '0.1.0-dev',
-        appDataDir: 'LocalMockAppData',
-        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Tokyo',
-        today: new Date().toISOString().split('T')[0] ?? '2026-11-04',
-        osTarget: 'browser-mock',
-      } as T;
-    }
-    if (command === 'get_storage_status') {
-      return {
-        status: 'ready',
-        databasePath: 'mock.db',
-        isWalEnabled: true,
-        migrationVersion: 1,
-      } as T;
-    }
+    const fallback = import.meta.env.DEV ? devFallback[command] : undefined;
+    if (fallback) return fallback() as T;
     throw {
       code: 'TAURI_NOT_AVAILABLE',
-      message: `Tauri runtime not available for command: ${command}`,
+      message: 'This action is only available in the desktop app.',
       category: 'internal',
     } satisfies AppError;
   }
@@ -50,21 +80,11 @@ export async function runCommand<T>(
   try {
     return await invoke<T>(command, args);
   } catch (err: unknown) {
-    if (err && typeof err === 'object' && 'code' in err && 'category' in err) {
-      throw err as AppError;
-    }
-    throw {
-      code: 'COMMAND_FAILED',
-      message: typeof err === 'string' ? err : 'Command failed with unexpected error',
-      category: 'internal',
-    } satisfies AppError;
+    throw toAppError(err);
   }
 }
 
-export async function getSystemInfo(): Promise<SystemInfo> {
-  return runCommand<SystemInfo>('get_system_info');
-}
-
-export async function getStorageStatus(): Promise<StorageStatus> {
-  return runCommand<StorageStatus>('get_storage_status');
-}
+export const getAppStatus = () => runCommand<AppStatus>('get_app_status');
+export const getSystemInfo = () => runCommand<SystemInfo>('get_system_info');
+export const getStorageStatus = () => runCommand<StorageStatus>('get_storage_status');
+export const getProfile = () => runCommand<Profile>('get_profile');

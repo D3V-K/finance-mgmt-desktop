@@ -95,7 +95,7 @@ export interface AppError {
   ```
   default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; object-src 'none'; frame-src 'none'; connect-src 'none';
   ```
-- **Scoped Permissions:** `src-tauri/capabilities/default.json` grants only minimal `core:default` permissions.
+- **Scoped Permissions:** superseded by [local-boundary.md](local-boundary.md) (#6): the capability grants only the app's own commands, no `core:*`.
 
 ---
 
