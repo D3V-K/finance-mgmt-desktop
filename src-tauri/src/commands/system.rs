@@ -1,35 +1,34 @@
 use crate::AppState;
 use crate::error::AppError;
-use serde::{Deserialize, Serialize};
+use crate::lifecycle::AppStatus;
+use serde::Serialize;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SystemInfo {
     pub app_version: String,
-    pub app_data_dir: String,
-    pub time_zone: String,
-    pub today: String,
     pub os_target: String,
 }
 
+/// Always available, including after a failed boot, so the renderer can show
+/// the blocking startup screen instead of financial screens.
 #[tauri::command]
-pub fn get_system_info(state: tauri::State<'_, AppState>) -> Result<SystemInfo, AppError> {
-    let now = chrono::Local::now();
-    let today = now.format("%Y-%m-%d").to_string();
-    let time_zone = format!("{:?}", now.offset());
+pub fn get_app_status(state: tauri::State<'_, AppState>) -> AppStatus {
+    state.boot.status()
+}
 
-    Ok(SystemInfo {
+/// Diagnostics without paths, usernames or data.
+#[tauri::command]
+pub fn get_system_info() -> SystemInfo {
+    SystemInfo {
         app_version: env!("CARGO_PKG_VERSION").to_string(),
-        app_data_dir: state.app_data_dir.clone(),
-        time_zone,
-        today,
         os_target: std::env::consts::OS.to_string(),
-    })
+    }
 }
 
 #[tauri::command]
 pub fn get_storage_status(
     state: tauri::State<'_, AppState>,
 ) -> Result<crate::db::StorageStatus, AppError> {
-    state.db.get_status()
+    state.boot.db()?.get_status()
 }
