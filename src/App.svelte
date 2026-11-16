@@ -80,7 +80,7 @@
         <div class="status-card">
           <span class="card-label">Migration Level</span>
           <strong class="card-value">Version {storageStatus.migrationVersion}</strong>
-          <span class="card-subtext">Offline schema ready</span>
+          <span class="card-subtext">{storageStatus.migrationVersion === 0 ? 'Ledger schema not installed yet' : 'Local schema installed'}</span>
         </div>
 
         {#if systemInfo}

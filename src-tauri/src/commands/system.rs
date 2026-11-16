@@ -13,15 +13,15 @@ pub struct SystemInfo {
 }
 
 #[tauri::command]
-pub fn get_system_info(state: tauri::State<'_, AppState>) -> Result<SystemInfo, AppError> {
-    let now = chrono::Local::now();
+pub fn get_system_info() -> Result<SystemInfo, AppError> {
+    let now = chrono::Utc::now()
+        .with_timezone(&chrono::FixedOffset::east_opt(9 * 3600).expect("valid JST offset"));
     let today = now.format("%Y-%m-%d").to_string();
-    let time_zone = format!("{:?}", now.offset());
 
     Ok(SystemInfo {
         app_version: env!("CARGO_PKG_VERSION").to_string(),
-        app_data_dir: state.app_data_dir.clone(),
-        time_zone,
+        app_data_dir: "Local application data".to_string(),
+        time_zone: "Asia/Tokyo".to_string(),
         today,
         os_target: std::env::consts::OS.to_string(),
     })
@@ -31,5 +31,7 @@ pub fn get_system_info(state: tauri::State<'_, AppState>) -> Result<SystemInfo, 
 pub fn get_storage_status(
     state: tauri::State<'_, AppState>,
 ) -> Result<crate::db::StorageStatus, AppError> {
-    state.db.get_status()
+    let mut status = state.db.get_status()?;
+    status.database_path = "Local SQLite database".to_string();
+    Ok(status)
 }

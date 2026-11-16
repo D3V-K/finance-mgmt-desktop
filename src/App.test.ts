@@ -19,7 +19,7 @@ describe('App shell component', () => {
     });
 
     expect(screen.getByText('SQLite (WAL mode: Enabled)')).toBeInTheDocument();
-    expect(screen.getByText('Offline schema ready')).toBeInTheDocument();
+    expect(screen.getByText('Ledger schema not installed yet')).toBeInTheDocument();
   });
 
   it('renders app-level error banner when command fails with storage error', async () => {

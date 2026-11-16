@@ -48,8 +48,12 @@ impl AppError {
         }
     }
 
-    pub fn storage(code: impl Into<String>, message: impl Into<String>) -> Self {
-        Self::new(code, message, ErrorCategory::Storage)
+    pub fn storage(code: impl Into<String>, _message: impl Into<String>) -> Self {
+        Self::new(
+            code,
+            "Local storage is unavailable. Check disk space and permissions, then restart the app.",
+            ErrorCategory::Storage,
+        )
     }
 
     pub fn validation(
@@ -65,8 +69,12 @@ impl AppError {
         }
     }
 
-    pub fn internal(code: impl Into<String>, message: impl Into<String>) -> Self {
-        Self::new(code, message, ErrorCategory::Internal)
+    pub fn internal(code: impl Into<String>, _message: impl Into<String>) -> Self {
+        Self::new(
+            code,
+            "An unexpected local error occurred. Restart the app and try again.",
+            ErrorCategory::Internal,
+        )
     }
 }
 
@@ -132,10 +140,10 @@ pub fn sanitize_error_message(msg: &str) -> String {
 impl From<rusqlite::Error> for AppError {
     fn from(err: rusqlite::Error) -> Self {
         match &err {
-            rusqlite::Error::SqliteFailure(err_code, msg) => {
-                let detail = msg.as_deref().unwrap_or("SQLite operation failed");
-                AppError::storage(format!("SQLITE_ERROR_{:?}", err_code.extended_code), detail)
-            }
+            rusqlite::Error::SqliteFailure(err_code, _) => AppError::storage(
+                format!("SQLITE_ERROR_{}", err_code.extended_code),
+                "SQLite operation failed",
+            ),
             rusqlite::Error::QueryReturnedNoRows => AppError::new(
                 "NOT_FOUND",
                 "Requested record was not found",
@@ -178,5 +186,18 @@ mod tests {
         let app_err: AppError = err.into();
         assert_eq!(app_err.code, "NOT_FOUND");
         assert_eq!(app_err.category, ErrorCategory::NotFound);
+    }
+
+    #[test]
+    fn storage_errors_never_echo_sensitive_details() {
+        let err = AppError::from(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
+            Some("transaction description: secret /Users/alice/finance.db".to_string()),
+        ));
+        assert_eq!(err.category, ErrorCategory::Storage);
+        assert!(!err.message.contains("secret"));
+        assert!(!err.message.contains("alice"));
+        let err = AppError::from(std::io::Error::other("private account data"));
+        assert!(!err.message.contains("private"));
     }
 }

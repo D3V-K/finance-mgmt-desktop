@@ -3,32 +3,45 @@ pub mod db;
 pub mod error;
 
 use db::Database;
-use error::sanitize_error_message;
 use std::sync::Arc;
 use tauri::Manager;
 
 pub struct AppState {
     pub db: Arc<Database>,
-    pub app_data_dir: String,
+}
+
+fn allow_navigation(url: &tauri::Url) -> bool {
+    if cfg!(debug_assertions)
+        && url.scheme() == "http"
+        && url.host_str() == Some("localhost")
+        && url.port() == Some(1420)
+    {
+        return true;
+    }
+    url.scheme() == "tauri" && url.host_str() == Some("localhost")
+        || url.scheme() == "http" && url.host_str() == Some("tauri.localhost")
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .setup(|app| {
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
             }
-
+        }))
+        .plugin(
+            tauri::plugin::Builder::<tauri::Wry>::new("local-navigation")
+                .on_navigation(|_, url| allow_navigation(url))
+                .build(),
+        )
+        .setup(|app| {
             // Ensure app data directory exists outside the installation directory
-            let app_data_dir = app.path().app_data_dir().map_err(|e| {
+            let app_data_dir = app.path().app_data_dir().map_err(|_| {
                 Box::new(error::AppError::storage(
                     "APP_DATA_DIR_ERROR",
-                    e.to_string(),
+                    "Cannot locate local application storage",
                 ))
             })?;
 
@@ -37,13 +50,10 @@ pub fn run() {
             })?;
 
             let db_path = app_data_dir.join("finance.db");
-            log::info!("Opening offline SQLite database at: {:?}", db_path);
-
             let database = Database::open(&db_path).map_err(Box::new)?;
 
             let state = AppState {
                 db: Arc::new(database),
-                app_data_dir: sanitize_error_message(&app_data_dir.to_string_lossy()),
             };
 
             app.manage(state);
@@ -56,4 +66,26 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::allow_navigation;
+
+    #[test]
+    fn navigation_is_local_only() {
+        assert!(allow_navigation(
+            &"tauri://localhost/index.html".parse().unwrap()
+        ));
+        assert!(allow_navigation(
+            &"http://tauri.localhost/index.html".parse().unwrap()
+        ));
+        assert!(!allow_navigation(&"https://example.com/".parse().unwrap()));
+        assert!(!allow_navigation(
+            &"file:///Users/private/secret".parse().unwrap()
+        ));
+        assert!(!allow_navigation(
+            &"http://tauri.localhost.evil.test/".parse().unwrap()
+        ));
+    }
 }

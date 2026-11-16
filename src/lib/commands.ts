@@ -27,8 +27,8 @@ export async function runCommand<T>(
       return {
         appVersion: '0.1.0-dev',
         appDataDir: 'LocalMockAppData',
-        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Tokyo',
-        today: new Date().toISOString().split('T')[0] ?? '2026-11-04',
+        timeZone: 'Asia/Tokyo',
+        today: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()),
         osTarget: 'browser-mock',
       } as T;
     }
@@ -37,7 +37,7 @@ export async function runCommand<T>(
         status: 'ready',
         databasePath: 'mock.db',
         isWalEnabled: true,
-        migrationVersion: 1,
+        migrationVersion: 0,
       } as T;
     }
     throw {
@@ -55,7 +55,7 @@ export async function runCommand<T>(
     }
     throw {
       code: 'COMMAND_FAILED',
-      message: typeof err === 'string' ? err : 'Command failed with unexpected error',
+      message: 'Local command failed. Restart the app and try again.',
       category: 'internal',
     } satisfies AppError;
   }
