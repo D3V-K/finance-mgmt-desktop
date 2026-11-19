@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-cash-forecast"
+description = "Enables the get_cash_forecast command without any pre-configured scope."
+commands.allow = ["get_cash_forecast"]
+
+[[permission]]
+identifier = "deny-get-cash-forecast"
+description = "Denies the get_cash_forecast command without any pre-configured scope."
+commands.deny = ["get_cash_forecast"]

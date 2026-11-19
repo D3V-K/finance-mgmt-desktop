@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-preview-legacy-resolution"
+description = "Enables the preview_legacy_resolution command without any pre-configured scope."
+commands.allow = ["preview_legacy_resolution"]
+
+[[permission]]
+identifier = "deny-preview-legacy-resolution"
+description = "Denies the preview_legacy_resolution command without any pre-configured scope."
+commands.deny = ["preview_legacy_resolution"]

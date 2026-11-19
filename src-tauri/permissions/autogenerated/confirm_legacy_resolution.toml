@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-confirm-legacy-resolution"
+description = "Enables the confirm_legacy_resolution command without any pre-configured scope."
+commands.allow = ["confirm_legacy_resolution"]
+
+[[permission]]
+identifier = "deny-confirm-legacy-resolution"
+description = "Denies the confirm_legacy_resolution command without any pre-configured scope."
+commands.deny = ["confirm_legacy_resolution"]

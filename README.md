@@ -5,6 +5,7 @@ Single-user, fully offline desktop finance application built with Tauri 2, Svelt
 ## Architecture & Documentation
 
 - [Scaffold and Command Boundary Architecture](docs/architecture/scaffold-decision.md)
+- [Core ledger contract v1](docs/contracts/v1-core-ledger.md) and the [screens command addendum](docs/contracts/v1-screens-addendum.md)
 - [Collaboration Protocol & Agent Guide](AGENTS.md)
 
 ## Prerequisites

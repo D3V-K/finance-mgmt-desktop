@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-legacy-balance"
+description = "Enables the get_legacy_balance command without any pre-configured scope."
+commands.allow = ["get_legacy_balance"]
+
+[[permission]]
+identifier = "deny-get-legacy-balance"
+description = "Denies the get_legacy_balance command without any pre-configured scope."
+commands.deny = ["get_legacy_balance"]

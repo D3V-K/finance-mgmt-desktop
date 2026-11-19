@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-savings-goals"
+description = "Enables the list_savings_goals command without any pre-configured scope."
+commands.allow = ["list_savings_goals"]
+
+[[permission]]
+identifier = "deny-list-savings-goals"
+description = "Denies the list_savings_goals command without any pre-configured scope."
+commands.deny = ["list_savings_goals"]

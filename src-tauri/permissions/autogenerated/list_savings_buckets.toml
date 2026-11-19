@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-savings-buckets"
+description = "Enables the list_savings_buckets command without any pre-configured scope."
+commands.allow = ["list_savings_buckets"]
+
+[[permission]]
+identifier = "deny-list-savings-buckets"
+description = "Denies the list_savings_buckets command without any pre-configured scope."
+commands.deny = ["list_savings_buckets"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-payday-override"
+description = "Enables the set_payday_override command without any pre-configured scope."
+commands.allow = ["set_payday_override"]
+
+[[permission]]
+identifier = "deny-set-payday-override"
+description = "Denies the set_payday_override command without any pre-configured scope."
+commands.deny = ["set_payday_override"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-archive-account"
+description = "Enables the archive_account command without any pre-configured scope."
+commands.allow = ["archive_account"]
+
+[[permission]]
+identifier = "deny-archive-account"
+description = "Denies the archive_account command without any pre-configured scope."
+commands.deny = ["archive_account"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-legacy-records"
+description = "Enables the list_legacy_records command without any pre-configured scope."
+commands.allow = ["list_legacy_records"]
+
+[[permission]]
+identifier = "deny-list-legacy-records"
+description = "Denies the list_legacy_records command without any pre-configured scope."
+commands.deny = ["list_legacy_records"]
