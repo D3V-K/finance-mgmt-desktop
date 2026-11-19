@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-create-card-schedule"
+description = "Enables the create_card_schedule command without any pre-configured scope."
+commands.allow = ["create_card_schedule"]
+
+[[permission]]
+identifier = "deny-create-card-schedule"
+description = "Denies the create_card_schedule command without any pre-configured scope."
+commands.deny = ["create_card_schedule"]

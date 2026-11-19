@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-revise-card-schedule"
+description = "Enables the revise_card_schedule command without any pre-configured scope."
+commands.allow = ["revise_card_schedule"]
+
+[[permission]]
+identifier = "deny-revise-card-schedule"
+description = "Denies the revise_card_schedule command without any pre-configured scope."
+commands.deny = ["revise_card_schedule"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-apply-card-event"
+description = "Enables the apply_card_event command without any pre-configured scope."
+commands.allow = ["apply_card_event"]
+
+[[permission]]
+identifier = "deny-apply-card-event"
+description = "Denies the apply_card_event command without any pre-configured scope."
+commands.deny = ["apply_card_event"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-category-budget"
+description = "Enables the set_category_budget command without any pre-configured scope."
+commands.allow = ["set_category_budget"]
+
+[[permission]]
+identifier = "deny-set-category-budget"
+description = "Denies the set_category_budget command without any pre-configured scope."
+commands.deny = ["set_category_budget"]

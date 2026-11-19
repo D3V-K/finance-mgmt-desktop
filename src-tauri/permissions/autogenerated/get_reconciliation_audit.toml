@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-reconciliation-audit"
+description = "Enables the get_reconciliation_audit command without any pre-configured scope."
+commands.allow = ["get_reconciliation_audit"]
+
+[[permission]]
+identifier = "deny-get-reconciliation-audit"
+description = "Denies the get_reconciliation_audit command without any pre-configured scope."
+commands.deny = ["get_reconciliation_audit"]

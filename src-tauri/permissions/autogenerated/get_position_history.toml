@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-position-history"
+description = "Enables the get_position_history command without any pre-configured scope."
+commands.allow = ["get_position_history"]
+
+[[permission]]
+identifier = "deny-get-position-history"
+description = "Denies the get_position_history command without any pre-configured scope."
+commands.deny = ["get_position_history"]

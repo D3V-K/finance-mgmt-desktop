@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-confirm-cutover"
+description = "Enables the confirm_cutover command without any pre-configured scope."
+commands.allow = ["confirm_cutover"]
+
+[[permission]]
+identifier = "deny-confirm-cutover"
+description = "Denies the confirm_cutover command without any pre-configured scope."
+commands.deny = ["confirm_cutover"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-allocation-capacity"
+description = "Enables the get_allocation_capacity command without any pre-configured scope."
+commands.allow = ["get_allocation_capacity"]
+
+[[permission]]
+identifier = "deny-get-allocation-capacity"
+description = "Denies the get_allocation_capacity command without any pre-configured scope."
+commands.deny = ["get_allocation_capacity"]

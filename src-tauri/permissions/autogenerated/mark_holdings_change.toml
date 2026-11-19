@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-mark-holdings-change"
+description = "Enables the mark_holdings_change command without any pre-configured scope."
+commands.allow = ["mark_holdings_change"]
+
+[[permission]]
+identifier = "deny-mark-holdings-change"
+description = "Denies the mark_holdings_change command without any pre-configured scope."
+commands.deny = ["mark_holdings_change"]

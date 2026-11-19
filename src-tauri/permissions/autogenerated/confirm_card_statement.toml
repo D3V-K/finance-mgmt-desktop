@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-confirm-card-statement"
+description = "Enables the confirm_card_statement command without any pre-configured scope."
+commands.allow = ["confirm_card_statement"]
+
+[[permission]]
+identifier = "deny-confirm-card-statement"
+description = "Denies the confirm_card_statement command without any pre-configured scope."
+commands.deny = ["confirm_card_statement"]

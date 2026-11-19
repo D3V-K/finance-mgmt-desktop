@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-financial-position"
+description = "Enables the get_financial_position command without any pre-configured scope."
+commands.allow = ["get_financial_position"]
+
+[[permission]]
+identifier = "deny-get-financial-position"
+description = "Denies the get_financial_position command without any pre-configured scope."
+commands.deny = ["get_financial_position"]

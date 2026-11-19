@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-account-opening"
+description = "Enables the set_account_opening command without any pre-configured scope."
+commands.allow = ["set_account_opening"]
+
+[[permission]]
+identifier = "deny-set-account-opening"
+description = "Denies the set_account_opening command without any pre-configured scope."
+commands.deny = ["set_account_opening"]

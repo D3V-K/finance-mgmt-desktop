@@ -160,10 +160,138 @@ pub fn page(page: u32, page_size: u32) -> Result<(u32, u32), AppError> {
     Ok((page, page_size))
 }
 
+/// Wire names that carry a calendar date without a `Date`/`On` suffix.
+const DATE_KEYS: &[&str] = &[
+    "from",
+    "to",
+    "month",
+    "payday",
+    "horizon",
+    "cycleStart",
+    "periodStart",
+    "periodEnd",
+];
+
+fn is_date_key(key: &str) -> bool {
+    key.ends_with("Date") || key.ends_with("On") || DATE_KEYS.contains(&key)
+}
+
+/// Pre-validates IDs, dates and amounts by wire name so a malformed value
+/// yields its stable code and field instead of an opaque Serde failure. Keys
+/// ending in `Id`/`Ids` are UUIDs; date keys are strict `YYYY-MM-DD`; every
+/// number must be a whole value within the renderer's safe range.
+fn check_fields(value: &serde_json::Value, path: &str) -> Result<(), AppError> {
+    use serde_json::Value;
+    match value {
+        Value::Object(map) => {
+            for (key, item) in map {
+                let field = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                match item {
+                    Value::String(raw) if key.ends_with("Id") => {
+                        parse_id(raw, &field)?;
+                    }
+                    Value::String(raw) if is_date_key(key) => {
+                        parse_date(raw, &field)?;
+                    }
+                    Value::Array(ids) if key.ends_with("Ids") => {
+                        for raw in ids {
+                            match raw.as_str() {
+                                Some(raw) => parse_id(raw, &field)?,
+                                None => return Err(invalid_id(&field)),
+                            };
+                        }
+                    }
+                    _ => check_fields(item, &field)?,
+                }
+            }
+            Ok(())
+        }
+        Value::Array(items) => items
+            .iter()
+            .enumerate()
+            .try_for_each(|(index, item)| check_fields(item, &format!("{path}.{index}"))),
+        Value::Number(number) => match number.as_i64() {
+            Some(whole) => yen(whole, path).map(|_| ()),
+            None => Err(AppError::invalid(
+                codes::INVALID_AMOUNT,
+                path,
+                "Enter a whole-yen amount.",
+            )),
+        },
+        _ => Ok(()),
+    }
+}
+
+/// Decodes a structured payload into a domain input. See [`check_fields`].
+pub fn decode<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, AppError> {
+    check_fields(&value, "")?;
+    serde_json::from_value(value).map_err(|_| {
+        AppError::new(
+            codes::INVALID_REQUEST,
+            "The request was not in the expected format.",
+            crate::error::ErrorCategory::Validation,
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::error::ErrorCategory;
+
+    #[test]
+    fn decode_reports_field_level_codes() {
+        #[derive(Debug, Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        #[allow(dead_code)]
+        struct Input {
+            account_id: Uuid,
+            as_of_date: NaiveDate,
+            amount: i64,
+            schedule_ids: Vec<Uuid>,
+        }
+        let ok = serde_json::json!({
+            "accountId": "0b9f6a7e-3c1d-4e2f-9a8b-7c6d5e4f3a2b",
+            "asOfDate": "2026-11-19", "amount": -5, "scheduleIds": []
+        });
+        assert!(decode::<Input>(ok.clone()).is_ok());
+
+        let cases = [
+            ("accountId", serde_json::json!("CASH"), codes::INVALID_ID),
+            (
+                "asOfDate",
+                serde_json::json!("2026-02-30"),
+                codes::INVALID_DATE,
+            ),
+            ("amount", serde_json::json!(12.5), codes::INVALID_AMOUNT),
+            (
+                "amount",
+                serde_json::json!(MAX_SAFE_YEN + 1),
+                codes::INVALID_AMOUNT,
+            ),
+            ("scheduleIds", serde_json::json!(["x"]), codes::INVALID_ID),
+        ];
+        for (field, bad, code) in cases {
+            let mut value = ok.clone();
+            value[field] = bad;
+            let err = decode::<Input>(value).unwrap_err();
+            assert_eq!(
+                (err.code.as_str(), err.field.as_deref()),
+                (code, Some(field))
+            );
+        }
+        let nested = decode::<serde_json::Value>(serde_json::json!({
+            "openings": [{ "accountId": "nope" }]
+        }))
+        .unwrap_err();
+        assert_eq!(nested.field.as_deref(), Some("openings.0.accountId"));
+        let shape = decode::<Input>(serde_json::json!({})).unwrap_err();
+        assert_eq!(shape.code, codes::INVALID_REQUEST);
+    }
 
     #[test]
     fn ids_must_be_hyphenated_uuids() {

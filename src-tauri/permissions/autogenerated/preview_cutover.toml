@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-preview-cutover"
+description = "Enables the preview_cutover command without any pre-configured scope."
+commands.allow = ["preview_cutover"]
+
+[[permission]]
+identifier = "deny-preview-cutover"
+description = "Denies the preview_cutover command without any pre-configured scope."
+commands.deny = ["preview_cutover"]
