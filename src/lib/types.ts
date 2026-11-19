@@ -165,3 +165,377 @@ export interface MonthlyPoint {
   netSpending: Yen;
   dateBasis: 'known_only';
 }
+
+// ---- Screens addendum (docs/contracts/v1-screens-addendum.md) --------------
+// Mirrors `src-tauri/src/domain/*` Serde output. Money stays whole yen; `null`
+// means unknown and is never coerced to zero.
+
+export type BalanceStatus = Balance['status'];
+
+export interface OpeningRevision extends Opening {
+  id: Id;
+  recordedAt: string;
+  reason: string;
+}
+export interface CanonicalCategoryTotal {
+  categoryId: Id;
+  categoryName: string;
+  grossSpending: Yen;
+  refunds: Yen;
+  netSpending: Yen;
+  dateBasis: 'known_only';
+}
+
+// #8 earlier Cash/Bank history and cutover
+export type LegacyAccount = 'CASH' | 'BANK';
+export interface LegacyTransaction {
+  id: Id;
+  amount: Yen;
+  description: string | null;
+  transactionDate: DateOnly;
+  categoryId: Id;
+  accountType: LegacyAccount;
+}
+export interface LegacyTransfer {
+  id: Id;
+  amount: Yen;
+  description: string | null;
+  transferDate: DateOnly;
+  from: LegacyAccount;
+  to: LegacyAccount;
+}
+export interface LegacyRecords {
+  transactions: LegacyTransaction[];
+  transfers: LegacyTransfer[];
+}
+export interface LegacyReports {
+  monthly: { month: DateOnly; income: Yen; expenses: Yen; net: Yen }[];
+  /** Legacy opening CASH+BANK plus cumulative net cash flow. Not net worth. */
+  netBalanceSeries: { month: DateOnly; balance: Yen }[];
+  balances: { cashBalance: Yen; bankBalance: Yen; totalBalance: Yen };
+}
+export interface TransactionMapping {
+  transactionId: Id;
+  accountId: Id;
+  effectiveDate: DateOnly;
+  occurredOn: DateOnly | null;
+}
+export interface TransferMapping {
+  transferId: Id;
+  fromAccountId: Id;
+  toAccountId: Id;
+  effectiveDate: DateOnly;
+}
+export interface LegacyMappings {
+  transactions: TransactionMapping[];
+  transfers: TransferMapping[];
+}
+export interface CutoverInput extends LegacyMappings {
+  asOfDate: DateOnly;
+  openings: { accountId: Id; amount: Yen }[];
+}
+export interface CutoverPreview {
+  asOfDate: DateOnly;
+  legacyTransactionCount: number;
+  legacyTransferCount: number;
+  categorySums: Record<Id, Yen>;
+  legacyDateMin: DateOnly | null;
+  legacyDateMax: DateOnly | null;
+  unresolvedTransactionIds: Id[];
+  unresolvedTransferIds: Id[];
+  unresolvedCount: number;
+  mappedCount: number;
+  openingTotal: Yen;
+  legacyAccountTypeIsUnverified: boolean;
+  purchaseDateBasis: string;
+}
+export interface Cutover {
+  id: Id;
+  asOfDate: DateOnly;
+  unresolvedCount: number;
+  status: string;
+}
+export interface Provenance {
+  sourceTable: string;
+  sourceId: Id;
+  recordedDate: DateOnly;
+  amount: Yen;
+  categoryId: Id | null;
+  status: string;
+  eventId: Id | null;
+}
+export interface ResolutionPreview {
+  asOfDate: DateOnly;
+  remainingBefore: number;
+  records: Provenance[];
+  writes: number;
+}
+export interface Resolution {
+  resolved: number;
+  remaining: number;
+  status: string;
+}
+
+// #9 cards, reserves and savings
+export interface CardSettings {
+  cardId: Id;
+  settlementAccountId: Id;
+  closingDay: number;
+  paymentDay: number;
+}
+export type ScheduleSource = 'estimate' | 'actual';
+export interface ScheduleInput {
+  cardId: Id;
+  purchaseEventId: Id | null;
+  openingObligation: string | null;
+  dueDate: DateOnly;
+  principalDue: Yen;
+  source: ScheduleSource;
+}
+export type ScheduleStatus = 'planned' | 'confirmed' | 'partially_paid' | 'paid';
+export interface Schedule extends ScheduleInput {
+  id: Id;
+  statementId: Id | null;
+  paid: Yen;
+  refunded: Yen;
+  outstanding: Yen;
+  status: ScheduleStatus | (string & {});
+  fundedReserve: Yen;
+  unfunded: Yen;
+}
+export interface StatementInput {
+  cardId: Id;
+  closingOn: DateOnly;
+  dueDate: DateOnly;
+  principalConfirmed: Yen;
+  scheduleIds: Id[];
+}
+export interface Statement extends StatementInput {
+  id: Id;
+}
+export interface Funding {
+  accountId: Id;
+  amount: Yen;
+  asOfDate: DateOnly;
+}
+export interface SavingsGoal {
+  id: Id;
+  name: string;
+  target: Yen;
+  targetDate: DateOnly | null;
+  archivedAt: string | null;
+}
+export interface SavingsBucket {
+  id: Id;
+  name: string;
+  goalId: Id | null;
+  funded: Yen;
+  archivedAt: string | null;
+}
+export interface AllocationCapacity {
+  balance: Balance;
+  funded: Yen;
+  allocatable: Yen | null;
+  shortfall: Yen | null;
+}
+
+// #10 payday, budgets, expected flows, forecast, dashboard
+export interface FinanceSettings {
+  timeZone: string;
+  paydayDay: number;
+  defaultAccountId: Id | null;
+}
+export interface Cycle {
+  start: DateOnly;
+  endExclusive: DateOnly;
+}
+export interface CategoryBudget {
+  categoryId: Id;
+  cycleStart: DateOnly;
+  planned: Yen;
+}
+export interface BudgetResult extends CategoryBudget {
+  id: Id;
+  categoryName: string;
+  grossSpending: Yen;
+  refunds: Yen;
+  netSpending: Yen;
+  remaining: Yen;
+}
+export interface BudgetSummary extends Cycle {
+  budgets: BudgetResult[];
+  unknownPurchaseDateCount: number;
+  coverage: 'complete' | 'incomplete' | (string & {});
+}
+export type Recurrence = 'none' | 'monthly';
+export type Certainty = 'confirmed' | 'estimated' | 'scenario_only';
+export interface ExpectedFlow {
+  accountId: Id;
+  onDate: DateOnly;
+  /** Signed: positive money in, negative money out. */
+  amount: Yen;
+  label: string;
+  recurrence: Recurrence;
+  certainty: Certainty;
+  scheduleId: Id | null;
+  budgetCategoryId: Id | null;
+}
+export interface Flow extends ExpectedFlow {
+  id: Id;
+}
+export interface FlowOverride {
+  flowId: Id;
+  scheduledDate: DateOnly;
+  overrideDate: DateOnly | null;
+  skipped: boolean;
+}
+export interface FlowMatch {
+  flowId: Id;
+  scheduledDate: DateOnly;
+  eventId: Id;
+}
+export interface Movement {
+  id: Id;
+  amount: Yen;
+  source: string;
+  label: string;
+  certainty: string;
+}
+export interface ForecastDay {
+  accountId: Id;
+  date: DateOnly;
+  startBalance: Yen | null;
+  endBalance: Yen | null;
+  movements: Movement[];
+  intradayOrderUncertain: boolean;
+  shortfall: boolean;
+  coverage: BalanceStatus;
+}
+export interface Forecast {
+  from: DateOnly;
+  to: DateOnly;
+  currency: 'JPY';
+  scenario: string;
+  days: ForecastDay[];
+  lowestByAccount: Record<Id, { date: DateOnly; balance: Yen }>;
+  coverage: string;
+  overdueScheduleIds: Id[];
+  warnings: string[];
+}
+export interface AvailableAccount {
+  accountId: Id;
+  liquidBalance: Yen | null;
+  fundedEarmarks: Yen;
+  unfundedKnownDue: Yen;
+  rawAvailable: Yen | null;
+  spendable: Yen | null;
+  reserveShortfall: Yen;
+  coverage: BalanceStatus;
+}
+export interface Availability {
+  asOfDate: DateOnly;
+  horizon: DateOnly;
+  currency: 'JPY';
+  accounts: AvailableAccount[];
+  remainingDiscretionaryBudget: Yen | null;
+  coverage: string;
+  overdueScheduleIds: Id[];
+  warnings: string[];
+}
+export interface Dashboard {
+  asOfDate: DateOnly;
+  availableCash: Availability;
+  livingBudget: BudgetSummary;
+  forecast: Forecast;
+  financialPosition: Position;
+  monthlyActuals: MonthlyPoint[];
+}
+
+// #11 investments, position, reconciliation, quality
+export interface ValuationInput {
+  accountId: Id;
+  asOfDate: DateOnly;
+  marketValue: Yen;
+  note: string | null;
+}
+export interface Valuation extends ValuationInput {
+  id: Id;
+  scope: string;
+  recordedAt: string;
+}
+export interface HoldingsChange {
+  accountId: Id;
+  occurredOn: DateOnly;
+  reason: string;
+  userEnteredRealizedGain: Yen | null;
+}
+export interface SecuritiesPosition {
+  value: Yen | null;
+  asOfDate: DateOnly | null;
+  scope: string;
+  status: 'recorded' | 'missing' | 'stale' | (string & {});
+}
+export interface PositionAccount {
+  accountId: Id;
+  name: string;
+  kind: AccountKind;
+  balance: Yen | null;
+  status: BalanceStatus;
+  securities: SecuritiesPosition | null;
+}
+export interface Position {
+  asOfDate: DateOnly;
+  currency: 'JPY';
+  liquidCash: Yen | null;
+  brokerageCash: Yen | null;
+  securitiesValue: Yen | null;
+  signedCardBalances: Yen | null;
+  netWorth: Yen | null;
+  coverage: 'complete' | 'incomplete' | (string & {});
+  accounts: PositionAccount[];
+  cumulativeContributions: Yen;
+  cumulativeWithdrawals: Yen;
+  userEnteredRealizedGain: Yen;
+  valuationChange: Yen | null;
+  investmentReturn: Yen | null;
+}
+export interface ReconciliationInput {
+  accountId: Id;
+  periodStart: DateOnly;
+  periodEnd: DateOnly;
+  statementOpening: Yen;
+  statementClosing: Yen;
+  selectedPostingIds: Id[] | null;
+}
+export interface ReviewPosting {
+  id: Id;
+  eventId: Id;
+  delta: Yen;
+  effectiveDate: DateOnly;
+}
+export interface Reconciliation {
+  id: Id;
+  accountId: Id;
+  periodStart: DateOnly;
+  periodEnd: DateOnly;
+  statementOpening: Yen;
+  statementClosing: Yen;
+  calculatedClosing: Yen;
+  allPostingsClosing: Yen;
+  difference: Yen;
+  baselineBeforePeriod: Yen | null;
+  openingMismatch: boolean;
+  selectedPostingIds: Id[];
+  unmatchedPostings: ReviewPosting[];
+  status: 'draft' | 'confirmed' | 'stale' | (string & {});
+  capturedAt: string;
+}
+export interface ReconciliationAudit {
+  action: string;
+  postingId: Id | null;
+  recordedAt: string;
+}
+export interface QualityIssue {
+  kind: string;
+  recordId: Id;
+}

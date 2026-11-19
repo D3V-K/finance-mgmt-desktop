@@ -1,7 +1,10 @@
 import { render, screen, waitFor } from '@testing-library/svelte';
 import { describe, it, expect, beforeEach } from 'vitest';
+import userEvent from '@testing-library/user-event';
+import { backend } from './test/backend';
 import App from './App.svelte';
 import { setMockInvoker } from './lib/commands';
+import { app } from './lib/app.svelte';
 import type { AppError, AppStatus } from './lib/types';
 
 function failedBoot(code: string, category: AppError['category'] = 'storage') {
@@ -17,16 +20,37 @@ function failedBoot(code: string, category: AppError['category'] = 'storage') {
 }
 
 describe('App startup gate', () => {
-  beforeEach(() => setMockInvoker(null));
+  beforeEach(() => {
+    setMockInvoker(null);
+    app.today = '';
+    app.storageIssue = null;
+    app.route = { name: 'overview' };
+  });
 
-  it('renders local status once boot is ready', async () => {
+  it('opens the app shell on the profile day once boot is ready', async () => {
+    const api = backend({
+      get_dashboard: () => new Promise(() => {}),
+    });
     render(App);
-    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Finance Desktop');
 
-    expect(await screen.findByTestId('storage-grid')).toBeInTheDocument();
-    expect(screen.getByText('SQLite (WAL mode: Enabled)')).toBeInTheDocument();
-    expect(screen.getByText('Offline schema ready')).toBeInTheDocument();
-    expect(screen.getByTestId('system-meta')).toHaveTextContent('(Asia/Tokyo)');
+    expect(await screen.findByRole('navigation', { name: 'Sections' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Overview/ })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByTestId('system-meta')).toHaveTextContent('Today 2026-11-19 (Asia/Tokyo)');
+    for (const section of ['Accounts', 'Cash flow', 'Categories', 'Budgets & savings', 'Cards & statements', 'Forecast', 'Reconciliation', 'Investments', 'Data quality', 'Ledger start & history']) {
+      expect(screen.getByRole('link', { name: new RegExp(section) })).toBeInTheDocument();
+    }
+    await waitFor(() => expect(api.of('get_dashboard')[0]?.args).toEqual({ asOfDate: '2026-11-19' }));
+  });
+
+  it('switches sections with the keyboard and moves focus to the new heading', async () => {
+    backend({ get_dashboard: () => new Promise(() => {}), get_canonical_monthly: [], get_canonical_by_category: [] });
+    render(App);
+    await screen.findByRole('navigation', { name: 'Sections' });
+    const user = userEvent.setup();
+    const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
+    await user.keyboard(isMac ? '{Meta>}3{/Meta}' : '{Control>}3{/Control}');
+    const heading = await screen.findByRole('heading', { level: 1, name: 'Cash flow' });
+    await waitFor(() => expect(heading).toHaveFocus());
   });
 
   it.each([
@@ -46,11 +70,9 @@ describe('App startup gate', () => {
     expect(calls).toEqual(['get_app_status']);
   });
 
-  it('shows a retryable banner for a storage error after a ready boot', async () => {
+  it('shows one retryable message when the profile cannot be read after boot', async () => {
     setMockInvoker(async (cmd) => {
       if (cmd === 'get_app_status') return { state: 'ready', error: null };
-      if (cmd === 'get_system_info') return { appVersion: '0.1.0', osTarget: 'macos' };
-      if (cmd === 'get_profile') return { timeZone: 'Asia/Tokyo', today: '2026-11-16' };
       const err: AppError = {
         code: 'STORAGE_UNAVAILABLE',
         message: 'Local storage is busy. Try again in a moment.',
@@ -61,8 +83,21 @@ describe('App startup gate', () => {
 
     render(App);
 
-    expect(await screen.findByTestId('error-banner')).toBeInTheDocument();
-    expect(screen.getByText('Error: STORAGE_UNAVAILABLE')).toBeInTheDocument();
+    const banner = await screen.findByTestId('error-banner');
+    expect(banner).toHaveTextContent('Reference: STORAGE_UNAVAILABLE');
     expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
+    expect(screen.queryByRole('navigation')).not.toBeInTheDocument();
+  });
+
+  it('reports a storage failure once in an app banner instead of per panel', async () => {
+    backend({
+      get_dashboard: () => {
+        throw { code: 'STORAGE_FAILURE', message: 'Local storage could not be read.', category: 'storage' };
+      },
+    });
+    render(App);
+    const banner = await screen.findByTestId('storage-banner');
+    expect(banner).toHaveTextContent('Local storage is not responding.');
+    expect(banner).toHaveTextContent('STORAGE_FAILURE');
   });
 });

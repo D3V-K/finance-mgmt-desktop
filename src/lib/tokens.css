@@ -1,0 +1,149 @@
+/*
+ * Design tokens for the desktop finance UI.
+ *
+ * Value-state colors (actual / forecast / incomplete / unknown) are never the
+ * only signal: every state also carries a text label and, in charts, a pattern.
+ * Contrast targets: body text ≥ 7:1, secondary text and state labels ≥ 4.5:1,
+ * focus ring and control borders ≥ 3:1 against their surface (WCAG 2.2).
+ */
+:root {
+  color-scheme: light dark;
+
+  /* Type — system stacks only; nothing is fetched at runtime. */
+  --font-ui: system-ui, -apple-system, 'Segoe UI', 'Hiragino Sans', 'Noto Sans JP', 'Yu Gothic UI', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', 'Menlo', monospace;
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-md: 0.9375rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.5rem;
+  --text-figure: clamp(1.75rem, 1.2rem + 1.6vw, 2.5rem);
+  --leading-tight: 1.2;
+  --leading-body: 1.5;
+
+  /* Space (4px grid) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --sidebar-width: 232px;
+  --content-max: 1180px;
+  --row-height: 44px;
+  --duration: 120ms;
+
+  /* Surfaces and ink */
+  --bg: #f6f5f2;
+  --surface: #ffffff;
+  --surface-sunken: #efede8;
+  --surface-raised: #ffffff;
+  --border: #dcd9d2;
+  --border-strong: #8a867d;
+  --ink: #1c1b19;
+  --ink-2: #4a4843;
+  --ink-3: #6b6860;
+  --accent: #2b5fd9;
+  --accent-ink: #ffffff;
+  --accent-soft: #e6edfc;
+  --focus: #2b5fd9;
+  --shadow: 0 1px 2px rgb(28 27 25 / 0.06), 0 4px 16px rgb(28 27 25 / 0.06);
+
+  /* Money direction — paired with sign glyph and sr-only text, never color alone */
+  --money-in: #1d6b43;
+  --money-out: var(--ink);
+  --money-debt: #a3302a;
+
+  /* Value states */
+  --state-actual: var(--ink);
+  --state-actual-bg: #e8e6e1;
+  --state-forecast: #5b4bb5;
+  --state-forecast-bg: #eeebfa;
+  --state-incomplete: #8a5300;
+  --state-incomplete-bg: #fbf0dc;
+  --state-error: #a3302a;
+  --state-error-bg: #fbe9e7;
+  --state-ok: #1d6b43;
+  --state-ok-bg: #e3f2e8;
+
+  /* Chart series */
+  --chart-in: #2f8a5b;
+  --chart-out: #4a4843;
+  --chart-forecast: #5b4bb5;
+  --chart-grid: #e4e1da;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bg: #161614;
+    --surface: #1f1f1c;
+    --surface-sunken: #121210;
+    --surface-raised: #282825;
+    --border: #3a3935;
+    --border-strong: #8d8a82;
+    --ink: #f0eee9;
+    --ink-2: #c8c5bd;
+    --ink-3: #a29f97;
+    --accent: #7ea2ff;
+    --accent-ink: #0e1a3a;
+    --accent-soft: #1f2a48;
+    --focus: #7ea2ff;
+    --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 4px 16px rgb(0 0 0 / 0.3);
+    --money-in: #6fd19d;
+    --money-debt: #ff9a8f;
+    --state-actual-bg: #2e2d29;
+    --state-forecast: #b7a9ff;
+    --state-forecast-bg: #2a2547;
+    --state-incomplete: #f5be62;
+    --state-incomplete-bg: #3a2d14;
+    --state-error: #ff9a8f;
+    --state-error-bg: #3d1f1c;
+    --state-ok: #6fd19d;
+    --state-ok-bg: #173324;
+    --chart-in: #5cc08b;
+    --chart-out: #b0ada5;
+    --chart-forecast: #a596ff;
+    --chart-grid: #33322e;
+  }
+}
+
+:root[data-theme='dark'] {
+  --bg: #161614;
+  --surface: #1f1f1c;
+  --surface-sunken: #121210;
+  --surface-raised: #282825;
+  --border: #3a3935;
+  --border-strong: #8d8a82;
+  --ink: #f0eee9;
+  --ink-2: #c8c5bd;
+  --ink-3: #a29f97;
+  --accent: #7ea2ff;
+  --accent-ink: #0e1a3a;
+  --accent-soft: #1f2a48;
+  --focus: #7ea2ff;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 4px 16px rgb(0 0 0 / 0.3);
+  --money-in: #6fd19d;
+  --money-debt: #ff9a8f;
+  --state-actual-bg: #2e2d29;
+  --state-forecast: #b7a9ff;
+  --state-forecast-bg: #2a2547;
+  --state-incomplete: #f5be62;
+  --state-incomplete-bg: #3a2d14;
+  --state-error: #ff9a8f;
+  --state-error-bg: #3d1f1c;
+  --state-ok: #6fd19d;
+  --state-ok-bg: #173324;
+  --chart-in: #5cc08b;
+  --chart-out: #b0ada5;
+  --chart-forecast: #a596ff;
+  --chart-grid: #33322e;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --duration: 0ms; }
+}
