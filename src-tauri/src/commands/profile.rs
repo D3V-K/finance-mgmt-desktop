@@ -1,12 +1,12 @@
 use crate::AppState;
-use crate::error::AppError;
+use crate::error::{AppError, codes};
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use serde::Serialize;
 
-/// Initial financial time zone, matching the Python finance settings. The local
-/// profile (#5) will persist this; macOS being the first OS does not change it.
-pub const DEFAULT_TIME_ZONE: Tz = chrono_tz::Asia::Tokyo;
+/// Initial financial time zone, matching the Python finance settings.
+#[cfg(test)]
+const DEFAULT_TIME_ZONE: Tz = chrono_tz::Asia::Tokyo;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -30,8 +30,16 @@ pub fn profile_at(now: DateTime<Utc>, tz: Tz) -> Profile {
 
 #[tauri::command]
 pub fn get_profile(state: tauri::State<'_, AppState>) -> Result<Profile, AppError> {
-    state.boot.db()?;
-    Ok(profile_at(Utc::now(), DEFAULT_TIME_ZONE))
+    let zone = crate::domain::Finance::new(state.boot.db()?)
+        .finance_settings()?
+        .time_zone;
+    let zone = zone.parse().map_err(|_| {
+        AppError::storage(
+            codes::STORAGE_FAILURE,
+            "The stored financial time zone is invalid.",
+        )
+    })?;
+    Ok(profile_at(Utc::now(), zone))
 }
 
 #[cfg(test)]

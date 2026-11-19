@@ -1,3 +1,5 @@
+pub mod migrations;
+
 use crate::error::{AppError, sanitize_error_message};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -50,7 +52,7 @@ impl Database {
             let journal_mode: String =
                 conn.query_row("PRAGMA journal_mode = WAL;", [], |row| row.get(0))?;
             log::info!("SQLite journal mode initialized: {}", journal_mode);
-            conn.execute_batch("PRAGMA synchronous = NORMAL;")?;
+            conn.execute_batch("PRAGMA synchronous = FULL;")?;
         }
 
         // Initialize schema migration tracking table
@@ -75,11 +77,10 @@ impl Database {
             .lock()
             .map_err(|_| AppError::storage("MUTEX_POISONED", "Failed to acquire database lock"))?;
 
-        let version: Option<u32> = conn
-            .query_row("SELECT MAX(version) FROM _schema_migrations", [], |row| {
+        let version: Option<u32> =
+            conn.query_row("SELECT MAX(version) FROM _schema_migrations", [], |row| {
                 row.get(0)
-            })
-            .unwrap_or(None);
+            })?;
 
         Ok(version.unwrap_or(0))
     }
@@ -96,6 +97,17 @@ impl Database {
         f(&conn)
     }
 
+    pub(crate) fn with_conn_mut<T>(
+        &self,
+        f: impl FnOnce(&mut Connection) -> Result<T, AppError>,
+    ) -> Result<T, AppError> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|_| AppError::storage("MUTEX_POISONED", "Failed to acquire database lock"))?;
+        f(&mut conn)
+    }
+
     /// Retrieve the live storage status for diagnostics and health monitoring.
     pub fn get_status(&self) -> Result<StorageStatus, AppError> {
         let conn = self
@@ -109,11 +121,10 @@ impl Database {
 
         let is_wal_enabled = journal_mode.to_uppercase() == "WAL" || self.db_path == ":memory:";
 
-        let version: Option<u32> = conn
-            .query_row("SELECT MAX(version) FROM _schema_migrations", [], |row| {
+        let version: Option<u32> =
+            conn.query_row("SELECT MAX(version) FROM _schema_migrations", [], |row| {
                 row.get(0)
-            })
-            .unwrap_or(None);
+            })?;
 
         Ok(StorageStatus {
             status: "ready".to_string(),

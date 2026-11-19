@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod db;
+pub mod domain;
 pub mod error;
 pub mod lifecycle;
 
@@ -56,7 +57,7 @@ pub fn run() {
             // Boot completes before the window exists, so no screen can render
             // ahead of storage and migrations.
             let boot = match app.path().app_data_dir() {
-                Ok(dir) => lifecycle::boot(&dir, lifecycle::no_domain_schema_yet),
+                Ok(dir) => lifecycle::boot(&dir, db::migrations::migrate),
                 Err(_) => Boot::Failed(AppError::storage(
                     codes::STORAGE_UNAVAILABLE,
                     "Local application storage could not be located.",
