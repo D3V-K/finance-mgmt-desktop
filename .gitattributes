@@ -1,0 +1,2 @@
+# Migration checksums are computed from the embedded SQL bytes.
+src-tauri/migrations/*.sql text eol=lf
