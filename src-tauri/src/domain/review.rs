@@ -196,7 +196,11 @@ fn securities(
     ))
 }
 
-pub(super) fn position(db: &Connection, on: NaiveDate) -> Result<Position, AppError> {
+pub(super) fn position(
+    db: &Connection,
+    on: NaiveDate,
+    mapping_complete: bool,
+) -> Result<Position, AppError> {
     date(on)?;
     let all = accounts(db, true)?;
     let mut result = Position {
@@ -220,7 +224,7 @@ pub(super) fn position(db: &Connection, on: NaiveDate) -> Result<Position, AppEr
         (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let mut changes_known = true;
     for a in all {
-        let b = balance(db, &a, on)?;
+        let b = balance(db, &a, on, mapping_complete)?;
         complete &= b.status == BalanceStatus::Complete;
         match (b.balance, a.kind) {
             (Some(v), AccountKind::CreditCard) => debt.push(v),
@@ -346,6 +350,7 @@ fn review_values(
             .period_start
             .pred_opt()
             .ok_or_else(|| invalid("periodStart", "Statement start is too early."))?,
+        mapping_complete(db)?,
     )?;
     let opening_mismatch = prior.balance.is_some_and(|b| b != input.statement_opening);
     let stale = status == "confirmed"
@@ -518,7 +523,7 @@ impl Finance<'_> {
     }
 
     pub fn financial_position(&self, on: NaiveDate) -> Result<Position, AppError> {
-        self.read(|db| position(db, on))
+        self.read(|db| position(db, on, mapping_complete(db)?))
     }
 
     pub fn position_history(
@@ -528,6 +533,7 @@ impl Finance<'_> {
     ) -> Result<Vec<Position>, AppError> {
         range(from, to, 366 * 10)?;
         self.read(|db| {
+            let mapping_complete = mapping_complete(db)?;
             let mut results = Vec::new();
             let mut month = from.with_day(1).expect("month has first day");
             while month <= to {
@@ -535,7 +541,7 @@ impl Finance<'_> {
                     .checked_add_months(Months::new(1))
                     .ok_or_else(|| invalid("to", "Date range is too large."))?;
                 let on = next.pred_opt().expect("month has previous day").min(to);
-                results.push(position(db, on)?);
+                results.push(position(db, on, mapping_complete)?);
                 month = next;
             }
             Ok(results)
@@ -668,7 +674,7 @@ impl Finance<'_> {
                 UNION ALL SELECT 'missing_settlement_account',s.id FROM card_schedules s
                     WHERE NOT EXISTS(SELECT 1 FROM card_settings c WHERE c.card_id=s.card_id)
                 ) ORDER BY kind,id",[],|r|Ok(QualityIssue { kind:r.get(0)?,record_id:id(r,1)? }))?;
-            for a in position(db,on)?.accounts {
+            for a in position(db,on,mapping_complete(db)?)?.accounts {
                 if let Some(s)=a.securities.filter(|s|s.status!="recorded") {
                     issues.push(QualityIssue { kind:format!("valuation_{}",s.status),record_id:a.account_id });
                 }

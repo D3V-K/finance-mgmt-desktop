@@ -38,6 +38,12 @@ pub fn migrate(db: &Database) -> Result<(), AppError> {
                 return Err(invalid_schema());
             }
         }
+        // Steady-state launches verify the migration ledger without scanning
+        // account data. Full database checks guard pending migrations.
+        if latest == MIGRATIONS.len() as i64 {
+            tx.commit()?;
+            return Ok(());
+        }
         if !checksum_column {
             tx.execute_batch("ALTER TABLE _schema_migrations ADD COLUMN checksum TEXT")?;
         }

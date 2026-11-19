@@ -4,26 +4,6 @@ use rusqlite::Row;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-macro_rules! stored_enum {
-    ($name:ident { $($variant:ident => $tag:literal),+ $(,)? }) => {
-        #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-        pub enum $name { $(#[serde(rename = $tag)] $variant),+ }
-
-        impl $name {
-            pub(super) fn as_str(self) -> &'static str {
-                match self { $(Self::$variant => $tag),+ }
-            }
-
-            pub(super) fn read(row: &Row<'_>, col: usize) -> rusqlite::Result<Self> {
-                match row.get::<_, String>(col)?.as_str() {
-                    $($tag => Ok(Self::$variant),)+
-                    _ => Err(rusqlite::Error::InvalidQuery),
-                }
-            }
-        }
-    };
-}
-
 stored_enum!(AccountKind {
     Cash => "CASH", Bank => "BANK", CreditCard => "CREDIT_CARD", BrokerageCash => "BROKERAGE_CASH",
 });
@@ -341,10 +321,21 @@ pub(super) fn add_opening(
     })
 }
 
+/// Resolve ledger-wide coverage once per database snapshot.
+pub(super) fn mapping_complete(conn: &Connection) -> Result<bool, AppError> {
+    exists(
+        conn,
+        "SELECT 1 FROM ledger_cutover WHERE singleton=1
+         AND NOT EXISTS(SELECT 1 FROM legacy_provenance WHERE status='unresolved')",
+        [],
+    )
+}
+
 pub(super) fn balance(
     conn: &Connection,
     account: &Account,
     on: NaiveDate,
+    mapping_complete: bool,
 ) -> Result<Balance, AppError> {
     date(on)?;
     let opening = latest_opening(conn, account.id)?;
@@ -370,18 +361,12 @@ pub(super) fn balance(
         result.amount_owed = Some((-signed).max(0));
         result.credit_balance = Some(signed.max(0));
     }
-    let complete = cutover_date(conn)?.is_some()
-        && !exists(
-            conn,
-            "SELECT 1 FROM legacy_provenance WHERE status='unresolved'",
-            [],
-        )?;
-    result.status = if complete {
+    result.status = if mapping_complete {
         BalanceStatus::Complete
     } else {
         BalanceStatus::IncompleteLegacyMapping
     };
-    result.reason = (!complete).then(|| "incomplete_legacy_mapping".into());
+    result.reason = (!mapping_complete).then(|| "incomplete_legacy_mapping".into());
     Ok(result)
 }
 
@@ -407,43 +392,65 @@ fn require_posting_date(
 }
 
 pub(super) fn event(conn: &Connection, event_id: Uuid) -> Result<Event, AppError> {
-    let mut event = conn.query_row(
-        "SELECT id,kind,amount,category_id,description,occurred_on,date_basis,recorded_at,
-                original_event_id,reverses_event_id,replaces_event_id,is_reversal
-         FROM financial_events WHERE id=?1",
-        [key(&event_id)],
-        |r| {
-            Ok(Event {
-                id: id(r, 0)?,
-                kind: EventKind::read(r, 1)?,
-                amount: r.get(2)?,
-                category_id: optional_id(r, 3)?,
-                description: r.get(4)?,
-                occurred_on: r.get(5)?,
-                date_basis: DateBasis::read(r, 6)?,
-                recorded_at: r.get(7)?,
-                original_event_id: optional_id(r, 8)?,
-                reverses_event_id: optional_id(r, 9)?,
-                replaces_event_id: optional_id(r, 10)?,
-                is_reversal: r.get(11)?,
-                postings: Vec::new(),
-            })
-        },
-    )?;
-    event.postings = rows(
+    events_with_postings(
         conn,
-        "SELECT account_id,delta,effective_date FROM account_postings
-        WHERE event_id=?1 ORDER BY account_id",
-        [key(&event.id)],
-        |r| {
-            Ok(Posting {
-                account_id: id(r, 0)?,
-                delta: r.get(1)?,
-                effective_date: r.get(2)?,
-            })
-        },
-    )?;
-    Ok(event)
+        "SELECT e.*, e.occurred_on AS sort_date FROM financial_events e WHERE e.id=?1",
+        [key(&event_id)],
+    )?
+    .pop()
+    .ok_or_else(missing)
+}
+
+fn events_with_postings(
+    conn: &Connection,
+    selection: &str,
+    bindings: impl Params,
+) -> Result<Vec<Event>, AppError> {
+    // Apply pagination to events before joining their (possibly multiple) postings.
+    // The selection is local SQL and all arguments are bound parameters.
+    let sql = format!(
+        "WITH selected AS ({selection})
+         SELECT e.id,e.kind,e.amount,e.category_id,e.description,e.occurred_on,e.date_basis,
+                e.recorded_at,e.original_event_id,e.reverses_event_id,e.replaces_event_id,
+                e.is_reversal,p.account_id,p.delta,p.effective_date
+         FROM selected e LEFT JOIN account_postings p ON p.event_id=e.id
+         ORDER BY e.sort_date DESC,e.recorded_at DESC,e.id DESC,p.account_id"
+    );
+    let mut statement = conn.prepare(&sql)?;
+    let mut rows = statement.query(bindings)?;
+    let mut events: Vec<Event> = Vec::new();
+    while let Some(row) = rows.next()? {
+        let event_id = id(row, 0)?;
+        if events.last().is_none_or(|event| event.id != event_id) {
+            events.push(Event {
+                id: event_id,
+                kind: EventKind::read(row, 1)?,
+                amount: row.get(2)?,
+                category_id: optional_id(row, 3)?,
+                description: row.get(4)?,
+                occurred_on: row.get(5)?,
+                date_basis: DateBasis::read(row, 6)?,
+                recorded_at: row.get(7)?,
+                original_event_id: optional_id(row, 8)?,
+                reverses_event_id: optional_id(row, 9)?,
+                replaces_event_id: optional_id(row, 10)?,
+                is_reversal: row.get(11)?,
+                postings: Vec::new(),
+            });
+        }
+        if let Some(account_id) = optional_id(row, 12)? {
+            events
+                .last_mut()
+                .expect("event was read")
+                .postings
+                .push(Posting {
+                    account_id,
+                    delta: row.get(13)?,
+                    effective_date: row.get(14)?,
+                });
+        }
+    }
+    Ok(events)
 }
 
 pub(super) fn insert_event(conn: &Connection, value: &Event) -> Result<(), AppError> {
@@ -886,7 +893,7 @@ impl Finance<'_> {
     }
 
     pub fn account_balance(&self, account_id: Uuid, on: NaiveDate) -> Result<Balance, AppError> {
-        self.read(|db| balance(db, &account(db, account_id)?, on))
+        self.read(|db| balance(db, &account(db, account_id)?, on, mapping_complete(db)?))
     }
 
     pub fn post_event(
@@ -941,22 +948,40 @@ impl Finance<'_> {
         let (number, size) = page(number, size)?;
         let offset = (i64::from(number) - 1) * i64::from(size);
         self.read(|db| {
-            let (total, ids) = if let Some(account_id) = account_id {
-                account(db,account_id)?;
+            let (total, items) = if let Some(account_id) = account_id {
+                account(db, account_id)?;
                 let account_id = key(&account_id);
-                let total = db.query_row("SELECT COUNT(*) FROM account_postings WHERE account_id=?1", [&account_id], |r| r.get(0))?;
-                let ids = rows(db,"SELECT e.id FROM financial_events e JOIN account_postings p ON p.event_id=e.id
-                     WHERE p.account_id=?1 ORDER BY p.effective_date DESC,e.recorded_at DESC,e.id DESC LIMIT ?2 OFFSET ?3",
-                    params![account_id,size,offset], |r|id(r,0))?;
-                (total,ids)
+                let total = db.query_row(
+                    "SELECT COUNT(*) FROM account_postings WHERE account_id=?1",
+                    [&account_id],
+                    |r| r.get(0),
+                )?;
+                let items = events_with_postings(
+                    db,
+                    "SELECT e.*, p.effective_date AS sort_date
+                     FROM account_postings p JOIN financial_events e ON e.id=p.event_id
+                     WHERE p.account_id=?1
+                     ORDER BY sort_date DESC,e.recorded_at DESC,e.id DESC LIMIT ?2 OFFSET ?3",
+                    params![account_id, size, offset],
+                )?;
+                (total, items)
             } else {
-                let total = db.query_row("SELECT COUNT(*) FROM financial_events",[],|r|r.get(0))?;
-                let ids = rows(db,"SELECT id FROM financial_events ORDER BY occurred_on DESC,recorded_at DESC,id DESC LIMIT ?1 OFFSET ?2",
-                    params![size,offset], |r|id(r,0))?;
-                (total,ids)
+                let total =
+                    db.query_row("SELECT COUNT(*) FROM financial_events", [], |r| r.get(0))?;
+                let items = events_with_postings(
+                    db,
+                    "SELECT e.*, e.occurred_on AS sort_date FROM financial_events e
+                     ORDER BY sort_date DESC,e.recorded_at DESC,e.id DESC LIMIT ?1 OFFSET ?2",
+                    params![size, offset],
+                )?;
+                (total, items)
             };
-            let items = ids.into_iter().map(|id|event(db,id)).collect::<Result<_,_>>()?;
-            Ok(Page { items,total,page:number,page_size:size })
+            Ok(Page {
+                items,
+                total,
+                page: number,
+                page_size: size,
+            })
         })
     }
 
@@ -1065,7 +1090,9 @@ fn category_used(db: &Connection, category_id: Uuid) -> Result<bool, AppError> {
         "SELECT 1 FROM categories WHERE parent_id=?1 UNION ALL
         SELECT 1 FROM financial_events WHERE category_id=?1 UNION ALL
         SELECT 1 FROM legacy_transactions WHERE category_id=?1 UNION ALL
-        SELECT 1 FROM category_budgets WHERE category_id=?1",
+        SELECT 1 FROM category_budgets WHERE category_id=?1 UNION ALL
+        SELECT 1 FROM expected_flows WHERE budget_category_id=?1 UNION ALL
+        SELECT 1 FROM legacy_provenance WHERE category_id=?1",
         [key(&category_id)],
     )
 }

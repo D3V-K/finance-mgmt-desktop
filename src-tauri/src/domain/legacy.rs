@@ -4,29 +4,7 @@ use crate::commands::wire::MAX_DESCRIPTION_CHARS;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "UPPERCASE")]
-pub enum LegacyAccount {
-    Cash,
-    Bank,
-}
-
-impl LegacyAccount {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Cash => "CASH",
-            Self::Bank => "BANK",
-        }
-    }
-
-    fn read(r: &rusqlite::Row<'_>, col: usize) -> rusqlite::Result<Self> {
-        match r.get::<_, String>(col)?.as_str() {
-            "CASH" => Ok(Self::Cash),
-            "BANK" => Ok(Self::Bank),
-            _ => Err(rusqlite::Error::InvalidQuery),
-        }
-    }
-}
+stored_enum!(LegacyAccount { Cash => "CASH", Bank => "BANK" });
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -274,7 +252,7 @@ impl Finance<'_> {
             let description = text(input.description.as_deref(),"description",MAX_DESCRIPTION_CHARS,false)?;
             let record = source.unwrap_or_else(Uuid::new_v4);
             let bindings = params![key(&record),input.amount,description,input.transaction_date,
-                key(&input.category_id),input.account_type.name()];
+                key(&input.category_id),input.account_type.as_str()];
             let count = if source.is_some() {
                 db.execute("UPDATE legacy_transactions SET amount=?2,description=?3,transaction_date=?4,
                     category_id=?5,account_type=?6 WHERE id=?1",bindings)?
@@ -300,7 +278,7 @@ impl Finance<'_> {
             if input.from == input.to { return Err(invalid("to","Transfer accounts must be distinct.")); }
             let description = text(input.description.as_deref(),"description",MAX_DESCRIPTION_CHARS,false)?;
             let record = source.unwrap_or_else(Uuid::new_v4);
-            let bindings = params![key(&record),input.amount,description,input.transfer_date,input.from.name(),input.to.name()];
+            let bindings = params![key(&record),input.amount,description,input.transfer_date,input.from.as_str(),input.to.as_str()];
             let count = if source.is_some() {
                 db.execute("UPDATE legacy_transfers SET amount=?2,description=?3,transfer_date=?4,
                     from_account_type=?5,to_account_type=?6 WHERE id=?1",bindings)?
@@ -344,7 +322,7 @@ impl Finance<'_> {
             yen(input.amount,"amount")?;
             db.execute("INSERT INTO legacy_openings(id,account_type,amount,as_of_date) VALUES (?1,?2,?3,?4)
                 ON CONFLICT(account_type) DO UPDATE SET amount=excluded.amount,as_of_date=excluded.as_of_date",
-                params![key(&Uuid::new_v4()),input.account_type.name(),input.amount,input.as_of_date])?;
+                params![key(&Uuid::new_v4()),input.account_type.as_str(),input.amount,input.as_of_date])?;
             Ok(input.clone())
         })
     }
@@ -441,7 +419,7 @@ impl Finance<'_> {
             let opening: Option<(i64, NaiveDate)> = db
                 .query_row(
                     "SELECT amount,as_of_date FROM legacy_openings WHERE account_type=?1",
-                    [bucket.name()],
+                    [bucket.as_str()],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()?;
@@ -453,21 +431,21 @@ impl Finance<'_> {
                 "SELECT COALESCE(SUM(CASE WHEN c.type='income' THEN l.amount ELSE -l.amount END),0)
                 FROM legacy_transactions l JOIN categories c ON c.id=l.category_id
                 WHERE l.account_type=?1 AND l.transaction_date BETWEEN ?2 AND ?3",
-                params![bucket.name(), start, on],
+                params![bucket.as_str(), start, on],
             )?;
             let moved = amount(
                 db,
                 "SELECT COALESCE(SUM(CASE WHEN to_account_type=?1 THEN amount ELSE -amount END),0)
                 FROM legacy_transfers WHERE (from_account_type=?1 OR to_account_type=?1)
                  AND transfer_date BETWEEN ?2 AND ?3",
-                params![bucket.name(), start, on],
+                params![bucket.as_str(), start, on],
             )?;
             Ok(Some(total([opening, net, moved])?))
         })
     }
 
     pub fn preview_cutover(&self, input: &CutoverInput) -> Result<CutoverPreview, AppError> {
-        self.read(|db| prepare_cutover(db, input).map(|p| p.0))
+        self.read(|db| prepare_cutover(db, input).map(|plan| plan.preview))
     }
 
     pub fn confirm_cutover(
@@ -481,19 +459,14 @@ impl Finance<'_> {
                 if hash != prior_hash { return Err(blocked("Cutover was already confirmed with different data.")); }
                 return Ok(cutover);
             }
-            if exists(db,"SELECT 1 FROM account_postings",[])? {
-                return Err(blocked("Cutover would invalidate existing named-account postings."));
-            }
-            let (preview, prepared) = prepare_cutover(db,&input)?;
-            for opening in &input.openings {
-                add_opening(db,&OpeningInput { account_id:opening.account_id, amount:opening.amount,
-                    as_of_date:input.as_of_date, reason:"Legacy cutover".into() },true)?;
+            let CutoverPlan { preview, new_openings, mut mapped } = prepare_cutover(db,&input)?;
+            for opening in new_openings {
+                add_opening(db,&opening,true)?;
             }
             let cutover = Cutover { id:Uuid::new_v4(),as_of_date:input.as_of_date,
                 unresolved_count:preview.unresolved_count,status:"confirmed".into() };
             db.execute("INSERT INTO ledger_cutover VALUES (1,?1,?2,?3,?4,?5)",
                 params![key(&cutover.id),input.as_of_date,now(),cutover.unresolved_count,hash])?;
-            let mut mapped: BTreeMap<_,_> = prepared.into_iter().collect();
             for mut row in sources(db,input.as_of_date)? {
                 if let Some(event) = mapped.remove(&(row.source_table.clone(),row.source_id)) {
                     insert_event(db,&event)?;
@@ -594,29 +567,70 @@ pub(super) fn provenance(db: &Connection, unresolved: bool) -> Result<Vec<Proven
     }))
 }
 
-fn prepare_cutover(
-    db: &Connection,
-    input: &CutoverInput,
-) -> Result<(CutoverPreview, MappedEvents), AppError> {
-    date(input.as_of_date)?;
-    let all = accounts(db, true)?;
-    for a in &all {
-        active(a)?;
-    }
+struct CutoverPlan {
+    preview: CutoverPreview,
+    new_openings: Vec<OpeningInput>,
+    mapped: MappedEvents,
+}
+
+fn prepare_cutover(db: &Connection, input: &CutoverInput) -> Result<CutoverPlan, AppError> {
+    let boundary = input.as_of_date;
+    date(boundary)?;
+    let active_accounts = accounts(db, false)?;
     let opening_ids: BTreeSet<_> = input.openings.iter().map(|o| o.account_id).collect();
-    if all.is_empty()
+    if active_accounts.is_empty()
         || opening_ids.len() != input.openings.len()
-        || opening_ids != all.iter().map(|a| a.id).collect()
+        || opening_ids != active_accounts.iter().map(|a| a.id).collect()
     {
         return Err(invalid(
             "openings",
-            "Every named account requires one explicit opening.",
+            "Every active named account requires one explicit opening.",
         ));
     }
-    for o in &input.openings {
-        yen(o.amount, "amount")?;
+    if exists(
+        db,
+        "SELECT 1 FROM account_postings WHERE effective_date<?1
+         UNION ALL SELECT 1 FROM financial_events WHERE occurred_on<?1",
+        [boundary],
+    )? {
+        return Err(blocked(
+            "The cutover date would exclude existing canonical activity.",
+        ));
     }
-    let mapped = prepare_mappings(db, input.as_of_date, &input.mappings, false)?;
+    let posted_accounts: BTreeSet<_> = rows(
+        db,
+        "SELECT DISTINCT account_id FROM account_postings",
+        [],
+        |r| id(r, 0),
+    )?
+    .into_iter()
+    .collect();
+    let mut new_openings = Vec::new();
+    let mut opening_dates = BTreeMap::new();
+    for opening in &input.openings {
+        yen(opening.amount, "amount")?;
+        let start = if posted_accounts.contains(&opening.account_id) {
+            let existing = latest_opening(db, opening.account_id)?
+                .filter(|o| o.amount == opening.amount && o.as_of_date >= boundary)
+                .ok_or_else(|| blocked("Keep the existing opening amount and choose a cutover date on or before that opening."))?;
+            existing.as_of_date
+        } else {
+            new_openings.push(OpeningInput {
+                account_id: opening.account_id,
+                amount: opening.amount,
+                as_of_date: boundary,
+                reason: "Legacy cutover".into(),
+            });
+            boundary
+        };
+        opening_dates.insert(opening.account_id, start);
+    }
+    let mapped = prepare_mappings(db, boundary, &input.mappings, |id| {
+        Ok(opening_dates.get(&id).copied())
+    })?;
+    for posting in mapped.values().flat_map(|event| &event.postings) {
+        super::review::guard_confirmed(db, posting.account_id, posting.effective_date)?;
+    }
     let mut preview = CutoverPreview {
         as_of_date: input.as_of_date,
         legacy_transaction_count: 0,
@@ -657,7 +671,11 @@ fn prepare_cutover(
             preview.unresolved_count += 1;
         }
     }
-    Ok((preview, mapped))
+    Ok(CutoverPlan {
+        preview,
+        new_openings,
+        mapped,
+    })
 }
 
 fn prepare_resolution(
@@ -665,7 +683,9 @@ fn prepare_resolution(
     mappings: &LegacyMappings,
 ) -> Result<(ResolutionPreview, MappedEvents), AppError> {
     let (cutover, _) = current_cutover(db)?.ok_or_else(missing)?;
-    let prepared = prepare_mappings(db, cutover.as_of_date, mappings, true)?;
+    let prepared = prepare_mappings(db, cutover.as_of_date, mappings, |id| {
+        Ok(latest_opening(db, id)?.map(|o| o.as_of_date))
+    })?;
     if prepared.is_empty() {
         return Err(invalid("mappings", "Select an unresolved record."));
     }
@@ -708,7 +728,7 @@ fn prepare_mappings(
     db: &Connection,
     cutoff: NaiveDate,
     mappings: &LegacyMappings,
-    require_opening: bool,
+    opening_date: impl Fn(Uuid) -> Result<Option<NaiveDate>, AppError>,
 ) -> Result<MappedEvents, AppError> {
     let tx: BTreeMap<_, _> = transactions(db)?.into_iter().collect();
     let tr: BTreeMap<_, _> = transfers(db)?.into_iter().collect();
@@ -718,12 +738,10 @@ fn prepare_mappings(
         let a = account(db, m.account_id)?;
         active(&a)?;
         validate_mapping_date(
-            db,
             cutoff,
             row.transaction_date,
             m.effective_date,
-            a.id,
-            require_opening,
+            opening_date(a.id)?,
         )?;
         if let Some(occurred) = m.occurred_on {
             date(occurred)?;
@@ -787,12 +805,10 @@ fn prepare_mappings(
                 ));
             }
             validate_mapping_date(
-                db,
                 cutoff,
                 row.transfer_date,
                 m.effective_date,
-                a.id,
-                require_opening,
+                opening_date(a.id)?,
             )?;
         }
         if source.id == dest.id {
@@ -832,12 +848,10 @@ fn prepare_mappings(
 }
 
 fn validate_mapping_date(
-    db: &Connection,
     cutoff: NaiveDate,
     recorded: NaiveDate,
     effective: NaiveDate,
-    account: Uuid,
-    require_opening: bool,
+    opening: Option<NaiveDate>,
 ) -> Result<(), AppError> {
     date(effective)?;
     if recorded < cutoff || effective < cutoff {
@@ -846,7 +860,7 @@ fn validate_mapping_date(
             "Pre-cutover records are already represented by the opening.",
         ));
     }
-    if require_opening && latest_opening(db, account)?.is_none_or(|o| effective < o.as_of_date) {
+    if opening.is_none_or(|on| effective < on) {
         return Err(AppError::invalid(
             codes::MISSING_OPENING,
             "effectiveDate",

@@ -1,6 +1,33 @@
 //! Offline financial services. Each write and its retry receipt share an
 //! immediate SQLite transaction. Reporting reads use a consistent snapshot.
 
+macro_rules! stored_enum {
+    (
+        $(#[$attribute:meta])* $name:ident {
+            $($(#[$variant_attribute:meta])* $variant:ident => $tag:literal),+ $(,)?
+        }
+    ) => {
+        #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+        $(#[$attribute])*
+        pub enum $name {
+            $($(#[$variant_attribute])* #[serde(rename = $tag)] $variant),+
+        }
+
+        impl $name {
+            pub(super) fn as_str(self) -> &'static str {
+                match self { $(Self::$variant => $tag),+ }
+            }
+
+            pub(super) fn read(row: &rusqlite::Row<'_>, column: usize) -> rusqlite::Result<Self> {
+                match row.get::<_, String>(column)?.as_str() {
+                    $($tag => Ok(Self::$variant),)+
+                    _ => Err(rusqlite::Error::InvalidQuery),
+                }
+            }
+        }
+    };
+}
+
 pub mod cards;
 pub mod ledger;
 pub mod legacy;

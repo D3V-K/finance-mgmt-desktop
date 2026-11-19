@@ -1,4 +1,4 @@
-use super::cards::{day_of_month, funded, schedule, schedule_funding, schedules_due};
+use super::cards::{card_commitments, day_of_month, funded, schedule, schedule_funding};
 use super::ledger::*;
 use super::review::{Position, nonnegative, position};
 use super::*;
@@ -56,41 +56,18 @@ pub struct BudgetSummary {
     pub coverage: String,
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum Recurrence {
-    #[default]
-    None,
-    Monthly,
-}
-
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum Certainty {
-    Confirmed,
-    #[default]
-    Estimated,
-    ScenarioOnly,
-}
-
-impl Recurrence {
-    fn name(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Monthly => "monthly",
-        }
+stored_enum!(
+    #[derive(Default)]
+    Recurrence { #[default] None => "none", Monthly => "monthly" }
+);
+stored_enum!(
+    #[derive(Default)]
+    Certainty {
+        Confirmed => "confirmed",
+        #[default] Estimated => "estimated",
+        ScenarioOnly => "scenario_only",
     }
-}
-
-impl Certainty {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Confirmed => "confirmed",
-            Self::Estimated => "estimated",
-            Self::ScenarioOnly => "scenario_only",
-        }
-    }
-}
+);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -171,6 +148,7 @@ pub struct Forecast {
     pub days: Vec<ForecastDay>,
     pub lowest_by_account: BTreeMap<Uuid, LowBalance>,
     pub coverage: String,
+    pub overdue_schedule_ids: Vec<Uuid>,
     pub warnings: Vec<String>,
 }
 
@@ -196,6 +174,7 @@ pub struct Availability {
     pub accounts: Vec<AvailableAccount>,
     pub remaining_discretionary_budget: Option<i64>,
     pub coverage: String,
+    pub overdue_schedule_ids: Vec<Uuid>,
     pub warnings: Vec<String>,
 }
 
@@ -283,6 +262,28 @@ fn cycle(db: &Connection, on: NaiveDate, day: u32) -> Result<Cycle, AppError> {
     }
 }
 
+/// Move existing budgets with the payday for their calendar month. The
+/// schedule change and budget keys are committed in the same write.
+fn move_month_budgets(db: &Connection, month: NaiveDate, to: NaiveDate) -> Result<(), AppError> {
+    let last = clamped_day(month, 31);
+    if exists(
+        db,
+        "SELECT 1 FROM category_budgets WHERE cycle_start BETWEEN ?1 AND ?2
+         GROUP BY category_id HAVING COUNT(*)>1",
+        params![month, last],
+    )? {
+        return Err(blocked(
+            "This payday would combine separate budgets for the same category.",
+        ));
+    }
+    db.execute(
+        "UPDATE category_budgets SET cycle_start=?3
+         WHERE cycle_start BETWEEN ?1 AND ?2 AND cycle_start<>?3",
+        params![month, last, to],
+    )?;
+    Ok(())
+}
+
 fn spending(
     db: &Connection,
     category_id: Uuid,
@@ -360,17 +361,6 @@ fn budgets(
 }
 
 fn flow_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Flow> {
-    let recurrence = if r.get::<_, String>(5)? == "monthly" {
-        Recurrence::Monthly
-    } else {
-        Recurrence::None
-    };
-    let certainty = match r.get::<_, String>(6)?.as_str() {
-        "confirmed" => Certainty::Confirmed,
-        "estimated" => Certainty::Estimated,
-        "scenario_only" => Certainty::ScenarioOnly,
-        _ => return Err(rusqlite::Error::InvalidQuery),
-    };
     Ok(Flow {
         id: id(r, 0)?,
         terms: ExpectedFlow {
@@ -378,8 +368,8 @@ fn flow_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Flow> {
             on_date: r.get(2)?,
             amount: r.get(3)?,
             label: r.get(4)?,
-            recurrence,
-            certainty,
+            recurrence: Recurrence::read(r, 5)?,
+            certainty: Certainty::read(r, 6)?,
             schedule_id: optional_id(r, 7)?,
             budget_category_id: optional_id(r, 8)?,
         },
@@ -525,7 +515,7 @@ fn expected_movements(
                     amount: terms.amount,
                     source: "expected".into(),
                     label: terms.label.clone(),
-                    certainty: terms.certainty.name().into(),
+                    certainty: terms.certainty.as_str().into(),
                 });
         }
     }
@@ -596,6 +586,7 @@ fn forecast(
     from: NaiveDate,
     to: NaiveDate,
     scenario: bool,
+    mapping_complete: bool,
 ) -> Result<Forecast, AppError> {
     range(from, to, MAX_FORECAST_DAYS)?;
     let (cfg, configured) = settings(db)?;
@@ -604,26 +595,30 @@ fn forecast(
     let mut movements = expected_movements(db, &flows, from, to, scenario)?;
     let card_timing = budget_movements(db, &flows, from, to, cfg.payday_day, &mut movements)?;
     let mut missing_bank = false;
-    for (id, bank) in schedules_due(db, from, to)? {
-        let s = schedule(db, id, Some(to))?;
-        if s.outstanding == 0 {
+    let mut overdue_schedule_ids = Vec::new();
+    for commitment in card_commitments(db, from, to)? {
+        let overdue = commitment.due_date < from;
+        if overdue {
+            overdue_schedule_ids.push(commitment.schedule_id);
+        }
+        if commitment.outstanding_at_horizon == 0 {
             continue;
         }
-        if let Some(account) = bank {
+        if let Some(account) = commitment.settlement_account_id {
             movements
-                .entry((account, s.terms.due_date))
+                .entry((account, commitment.due_date.max(from)))
                 .or_default()
                 .push(Movement {
-                    id,
-                    amount: -s.outstanding,
+                    id: commitment.schedule_id,
+                    amount: -commitment.outstanding_at_horizon,
                     source: "card_schedule".into(),
-                    label: "Card payment".into(),
-                    certainty: if s.terms.source == super::cards::ScheduleSource::Actual {
-                        "actual"
+                    label: if overdue {
+                        "Overdue card payment"
                     } else {
-                        "estimate"
+                        "Card payment"
                     }
                     .into(),
+                    certainty: commitment.source.as_str().into(),
                 });
         } else {
             missing_bank = true;
@@ -644,7 +639,7 @@ fn forecast(
     }
     let mut states = all
         .into_iter()
-        .map(|a| balance(db, &a, from).map(|b| (a.id, b.balance, b.status)))
+        .map(|a| balance(db, &a, from, mapping_complete).map(|b| (a.id, b.balance, b.status)))
         .collect::<Result<Vec<_>, _>>()?;
     let missing_opening = states.is_empty()
         || states
@@ -687,6 +682,9 @@ fn forecast(
         }
     }
     let mut warnings = Vec::new();
+    if !overdue_schedule_ids.is_empty() {
+        warnings.push("Overdue card payments remain open. Unsettled amounts are projected on the first forecast day.".into());
+    }
     if missing_bank {
         warnings.push("Missing card settlement mapping".into());
     }
@@ -720,6 +718,7 @@ fn forecast(
             "partial_assumptions"
         }
         .into(),
+        overdue_schedule_ids,
         warnings,
     })
 }
@@ -728,23 +727,29 @@ fn availability(
     db: &Connection,
     on: NaiveDate,
     horizon: NaiveDate,
+    mapping_complete: bool,
 ) -> Result<Availability, AppError> {
     range(on, horizon, MAX_FORECAST_DAYS)?;
     let (_, configured) = settings(db)?;
     let all = cash_accounts(db)?;
     let mut missing_bank = false;
+    let mut outside_settlement = false;
+    let mut overdue_schedule_ids = Vec::new();
     let mut scheduled = BTreeMap::<Uuid, Vec<i64>>::new();
-    for (id, bank) in schedules_due(db, on, horizon)? {
-        let s = schedule(db, id, Some(on))?;
-        if s.outstanding == 0 {
-            continue;
+    for commitment in card_commitments(db, on, horizon)? {
+        let id = commitment.schedule_id;
+        if commitment.due_date < on {
+            overdue_schedule_ids.push(id);
         }
-        if let Some(bank) = bank {
-            let reserved = schedule_funding(db, id, Some(bank), Some(on))?;
+        if let Some(bank) = commitment.settlement_account_id {
+            let reserved = schedule_funding(db, id, None, Some(on))?;
+            if reserved > 0 && schedule_funding(db, id, Some(bank), Some(on))? < reserved {
+                outside_settlement = true;
+            }
             scheduled
                 .entry(bank)
                 .or_default()
-                .push((s.outstanding - reserved).max(0));
+                .push((commitment.outstanding - reserved).max(0));
         } else {
             missing_bank = true;
         }
@@ -797,7 +802,7 @@ fn availability(
     }
     let mut accounts = Vec::new();
     for a in all {
-        let b = balance(db, &a, on)?;
+        let b = balance(db, &a, on, mapping_complete)?;
         let earmarks = funded(db, a.id, Some(on))?;
         let reserve_shortfall = total(scheduled.remove(&a.id).unwrap_or_default())?;
         let due = total([
@@ -845,6 +850,12 @@ fn availability(
             .any(|b| b.coverage != BalanceStatus::Complete);
     let unknown = summary.unknown_purchase_date_count > 0;
     let mut warnings = Vec::new();
+    if !overdue_schedule_ids.is_empty() {
+        warnings.push("Overdue card payments are included in cash commitments.".into());
+    }
+    if outside_settlement {
+        warnings.push("Some card reserves are held outside their settlement account.".into());
+    }
     if !configured {
         warnings.push("Finance settings are unconfirmed".into());
     }
@@ -867,12 +878,13 @@ fn availability(
         } else {
             Some(total(discretionary)?)
         },
-        coverage: if warnings.is_empty() {
+        coverage: if configured && !unknown && !missing_bank && !incomplete_openings {
             "complete"
         } else {
             "incomplete"
         }
         .into(),
+        overdue_schedule_ids,
         warnings,
     })
 }
@@ -896,6 +908,22 @@ impl Finance<'_> {
             if let Some(id) = input.default_account_id {
                 active(&account(db, id)?)?;
             }
+            let old_day = settings(db)?.0.payday_day;
+            if old_day != input.payday_day {
+                let months = rows(
+                    db,
+                    "SELECT DISTINCT substr(cycle_start,1,7)||'-01' FROM category_budgets ORDER BY 1",
+                    [],
+                    |row| row.get::<_, NaiveDate>(0),
+                )?;
+                for month in months {
+                    let before = payday(db, month, old_day)?;
+                    let after = payday(db, month, input.payday_day)?;
+                    if before != after {
+                        move_month_budgets(db, month, after)?;
+                    }
+                }
+            }
             db.execute(
                 "UPDATE local_profile SET time_zone=?1 WHERE singleton=1",
                 [zone.name()],
@@ -918,6 +946,9 @@ impl Finance<'_> {
         self.write(request,"set_payday_override",&(month,on),|db| {
             date(on)?;
             if month_start(on)!=month { return Err(invalid("month","Override must fall within its named month.")); }
+            if payday(db, month, settings(db)?.0.payday_day)? != on {
+                move_month_budgets(db, month, on)?;
+            }
             db.execute("INSERT INTO payday_overrides VALUES (?1,?2) ON CONFLICT(month) DO UPDATE SET actual_date=excluded.actual_date",
                 params![month,on])?;
             Ok(on)
@@ -1021,8 +1052,8 @@ impl Finance<'_> {
                     terms.on_date,
                     terms.amount,
                     label,
-                    terms.recurrence.name(),
-                    terms.certainty.name(),
+                    terms.recurrence.as_str(),
+                    terms.certainty.as_str(),
                     terms.schedule_id.as_ref().map(key),
                     terms.budget_category_id.as_ref().map(key)
                 ],
@@ -1139,7 +1170,7 @@ impl Finance<'_> {
         to: NaiveDate,
         scenario: bool,
     ) -> Result<Forecast, AppError> {
-        self.read(|db| forecast(db, from, to, scenario))
+        self.read(|db| forecast(db, from, to, scenario, mapping_complete(db)?))
     }
 
     pub fn available_cash(
@@ -1147,19 +1178,20 @@ impl Finance<'_> {
         on: NaiveDate,
         horizon: NaiveDate,
     ) -> Result<Availability, AppError> {
-        self.read(|db| availability(db, on, horizon))
+        self.read(|db| availability(db, on, horizon, mapping_complete(db)?))
     }
 
     pub fn dashboard(&self, on: NaiveDate) -> Result<Dashboard, AppError> {
         self.read(|db| {
             let living_budget = budgets(db, on, None)?;
+            let mapping_complete = mapping_complete(db)?;
             let horizon = living_budget.cycle.end_exclusive;
             Ok(Dashboard {
                 as_of_date: on,
-                available_cash: availability(db, on, horizon)?,
+                available_cash: availability(db, on, horizon, mapping_complete)?,
                 living_budget,
-                forecast: forecast(db, on, horizon, false)?,
-                financial_position: position(db, on)?,
+                forecast: forecast(db, on, horizon, false, mapping_complete)?,
+                financial_position: position(db, on, mapping_complete)?,
                 monthly_actuals: monthly(db, Some(month_start(on)), Some(on))?,
             })
         })

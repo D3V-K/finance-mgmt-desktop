@@ -590,3 +590,517 @@ fn reconciliation_flags_new_postings_and_records_reopen_and_adjustment_audit() {
         100
     );
 }
+
+#[test]
+fn overdue_card_payment_keeps_one_commitment_across_separate_funding_accounts() {
+    let (_dir, db) = fixture();
+    let f = Finance::new(&db);
+    let bank = account(&f, "Bank", AccountKind::Bank);
+    let cash = account(&f, "Cash", AccountKind::Cash);
+    let card = account(&f, "Card", AccountKind::CreditCard);
+    cutover(&f, &[(bank, 20_000), (cash, 30_000), (card, -10_000)]);
+    let due = day("2026-01-15");
+    let on = day("2026-01-16");
+    let tomorrow = day("2026-01-17");
+    let schedule = f
+        .create_schedule(
+            id(),
+            ScheduleInput {
+                card_id: card,
+                purchase_event_id: None,
+                opening_obligation: Some("Opening card debt".into()),
+                due_date: due,
+                principal_due: 10_000,
+                source: ScheduleSource::Actual,
+            },
+        )
+        .unwrap()
+        .result
+        .id;
+    assert_eq!(
+        f.cash_forecast(on, tomorrow, false)
+            .unwrap()
+            .overdue_schedule_ids,
+        vec![schedule]
+    );
+    f.set_card_settings(
+        id(),
+        CardSettings {
+            card_id: card,
+            settlement_account_id: bank,
+            closing_day: 5,
+            payment_day: 15,
+        },
+    )
+    .unwrap();
+    f.fund_card_reserve(
+        id(),
+        schedule,
+        Funding {
+            account_id: cash,
+            amount: 10_000,
+            as_of_date: due,
+        },
+    )
+    .unwrap();
+
+    let available = f.available_cash(on, tomorrow).unwrap();
+    assert_eq!(available.overdue_schedule_ids, vec![schedule]);
+    let bank_cash = available
+        .accounts
+        .iter()
+        .find(|a| a.account_id == bank)
+        .unwrap();
+    let wallet = available
+        .accounts
+        .iter()
+        .find(|a| a.account_id == cash)
+        .unwrap();
+    assert_eq!(
+        (bank_cash.unfunded_known_due, bank_cash.raw_available),
+        (0, Some(20_000))
+    );
+    assert_eq!(
+        (wallet.funded_earmarks, wallet.raw_available),
+        (10_000, Some(20_000))
+    );
+    assert!(
+        available
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("outside"))
+    );
+
+    let report = f.cash_forecast(on, tomorrow, false).unwrap();
+    assert_eq!(report.overdue_schedule_ids, vec![schedule]);
+    let first = report
+        .days
+        .iter()
+        .find(|row| row.date == on && row.account_id == bank)
+        .unwrap();
+    assert_eq!(first.end_balance, Some(10_000));
+    assert!(
+        first
+            .movements
+            .iter()
+            .any(|m| m.id == schedule && m.amount == -10_000)
+    );
+
+    let payment = f
+        .post_event(
+            id(),
+            EventInput {
+                kind: EventKind::CardRepayment,
+                amount: 10_000,
+                account_id: bank,
+                destination_account_id: Some(card),
+                category_id: None,
+                description: None,
+                occurred_on: tomorrow,
+                effective_date: tomorrow,
+                original_event_id: None,
+                adjustment_delta: None,
+            },
+        )
+        .unwrap()
+        .result
+        .id;
+    f.apply_card_event(id(), schedule, payment, 10_000).unwrap();
+    let report = f.cash_forecast(on, tomorrow, false).unwrap();
+    assert_eq!(report.overdue_schedule_ids, vec![schedule]);
+    let debits: Vec<_> = report
+        .days
+        .iter()
+        .filter(|d| d.account_id == bank)
+        .flat_map(|d| &d.movements)
+        .map(|m| (m.id, m.amount))
+        .collect();
+    assert_eq!(debits, vec![(payment, -10_000)]);
+    assert!(
+        f.available_cash(tomorrow, tomorrow)
+            .unwrap()
+            .overdue_schedule_ids
+            .is_empty()
+    );
+}
+
+#[test]
+fn payday_changes_move_category_budgets_and_payment_assumptions_in_place() {
+    let (_dir, db) = fixture();
+    let f = Finance::new(&db);
+    let bank = account(&f, "Bank", AccountKind::Bank);
+    cutover(&f, &[(bank, 100_000)]);
+    let cat = f
+        .create_category(id(), "Food", CategoryType::Expense, None)
+        .unwrap()
+        .result
+        .id;
+    let march = day("2028-03-25");
+    let april = day("2028-04-25");
+    let budget = |start| CategoryBudget {
+        category_id: cat,
+        cycle_start: start,
+        planned: 900,
+    };
+    let march_id = f
+        .set_category_budget(id(), budget(march))
+        .unwrap()
+        .result
+        .id;
+    let april_id = f
+        .set_category_budget(id(), budget(april))
+        .unwrap()
+        .result
+        .id;
+    f.set_budget_payment_account(id(), cat, march, Some(bank))
+        .unwrap();
+
+    let new_march = day("2028-03-24");
+    let override_key = id();
+    f.set_payday_override(override_key, day("2028-03-01"), new_march)
+        .unwrap();
+    assert!(
+        f.set_payday_override(override_key, day("2028-03-01"), new_march)
+            .unwrap()
+            .is_replay
+    );
+    let report = f.budget_summary(new_march).unwrap();
+    assert_eq!(
+        (report.cycle.start, report.budgets[0].id),
+        (new_march, march_id)
+    );
+    let forecast = f
+        .cash_forecast(new_march, day("2028-04-24"), false)
+        .unwrap();
+    let net_amount: i64 = forecast
+        .days
+        .iter()
+        .flat_map(|row| &row.movements)
+        .filter(|item| item.id == march_id)
+        .map(|item| item.amount)
+        .sum();
+    assert_eq!(net_amount, -900);
+
+    f.set_finance_settings(
+        id(),
+        FinanceSettings {
+            time_zone: "Asia/Tokyo".into(),
+            payday_day: 28,
+            default_account_id: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(f.budget_summary(new_march).unwrap().budgets[0].id, march_id);
+    let new_april = day("2028-04-28");
+    assert_eq!(f.budget_summary(new_april).unwrap().budgets[0].id, april_id);
+    assert_eq!(
+        f.set_category_budget(id(), budget(new_april))
+            .unwrap()
+            .result
+            .id,
+        april_id
+    );
+}
+
+#[test]
+fn cutover_preserves_posted_openings_and_excludes_archived_accounts() {
+    let (_dir, db) = fixture();
+    let f = Finance::new(&db);
+    let bank = account(&f, "Bank", AccountKind::Bank);
+    let archived = account(&f, "Old card", AccountKind::CreditCard);
+    f.archive_account(id(), archived, true).unwrap();
+    let food = f
+        .create_category(id(), "Food", CategoryType::Expense, None)
+        .unwrap()
+        .result
+        .id;
+    let boundary = day("2026-01-01");
+    let start = day("2026-01-03");
+    let on = day("2026-01-04");
+    f.set_opening(
+        id(),
+        OpeningInput {
+            account_id: bank,
+            amount: 10_000,
+            as_of_date: start,
+            reason: "Opening".into(),
+        },
+    )
+    .unwrap();
+    let posted = f
+        .post_event(id(), expense(bank, food, 1_000, on))
+        .unwrap()
+        .result;
+    let legacy = f
+        .save_legacy_transaction(
+            id(),
+            None,
+            LegacyTransaction {
+                amount: 2_000,
+                description: None,
+                transaction_date: start,
+                category_id: food,
+                account_type: LegacyAccount::Bank,
+            },
+        )
+        .unwrap()
+        .result;
+    let mut input = CutoverInput {
+        as_of_date: boundary,
+        openings: vec![CutoverOpening {
+            account_id: bank,
+            amount: 9_000,
+        }],
+        mappings: LegacyMappings {
+            transactions: vec![TransactionMapping {
+                transaction_id: legacy,
+                account_id: bank,
+                effective_date: start,
+                occurred_on: None,
+            }],
+            transfers: vec![],
+        },
+    };
+    let confirm_key = id();
+    assert_eq!(
+        f.confirm_cutover(confirm_key, input.clone())
+            .unwrap_err()
+            .category,
+        ErrorCategory::Conflict
+    );
+    input.openings[0].amount = 10_000;
+    input.as_of_date = on;
+    assert_eq!(
+        f.preview_cutover(&input).unwrap_err().category,
+        ErrorCategory::Conflict
+    );
+    input.as_of_date = boundary;
+    input.mappings.transactions[0].effective_date = boundary;
+    assert_eq!(
+        f.preview_cutover(&input).unwrap_err().code,
+        codes::MISSING_OPENING
+    );
+    input.mappings.transactions[0].effective_date = start;
+    assert_eq!(f.preview_cutover(&input).unwrap().mapped_count, 1);
+    assert_eq!(f.list_events(None, 1, 10).unwrap().total, 1);
+
+    assert_eq!(
+        f.confirm_cutover(confirm_key, input)
+            .unwrap()
+            .result
+            .unresolved_count,
+        0
+    );
+    assert_eq!(f.financial_event(posted.id).unwrap(), posted);
+    let revisions = f.opening_revisions(bank).unwrap();
+    assert_eq!(revisions.len(), 1);
+    assert_eq!(revisions[0].opening.as_of_date, start);
+    assert!(f.opening_revisions(archived).unwrap().is_empty());
+    let balance = f.account_balance(bank, on).unwrap();
+    assert_eq!(
+        (balance.balance, balance.status),
+        (Some(7_000), BalanceStatus::Complete)
+    );
+    assert_eq!(f.account_balance(bank, boundary).unwrap().balance, None);
+}
+
+#[test]
+fn category_references_in_forecasts_and_provenance_guard_change_and_delete() {
+    let (_dir, db) = fixture();
+    let f = Finance::new(&db);
+    let bank = account(&f, "Bank", AccountKind::Bank);
+    let bill = f
+        .create_category(id(), "Bills", CategoryType::Expense, None)
+        .unwrap()
+        .result
+        .id;
+    let archive = f
+        .create_category(id(), "Archive", CategoryType::Expense, None)
+        .unwrap()
+        .result
+        .id;
+    f.create_expected_flow(
+        id(),
+        ExpectedFlow {
+            account_id: bank,
+            on_date: day("2026-01-01"),
+            amount: -100,
+            label: "Internet".into(),
+            recurrence: Recurrence::None,
+            certainty: Certainty::Confirmed,
+            schedule_id: None,
+            budget_category_id: Some(bill),
+        },
+    )
+    .unwrap();
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO legacy_provenance
+            (id,source_table,source_id,recorded_date,amount,category_id,status)
+            VALUES (?1,'legacy_transactions',?2,'2026-01-01',100,?3,'historical')",
+            [id().to_string(), id().to_string(), archive.to_string()],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    for category in [bill, archive] {
+        assert_eq!(
+            f.update_category(id(), category, "Income", CategoryType::Income, None)
+                .unwrap_err()
+                .category,
+            ErrorCategory::Conflict
+        );
+        assert_eq!(
+            f.delete_category(id(), category).unwrap_err().category,
+            ErrorCategory::Conflict
+        );
+    }
+}
+
+#[test]
+fn event_page_limits_events_and_returns_all_their_postings() {
+    let (_dir, db) = fixture();
+    let f = Finance::new(&db);
+    let bank = account(&f, "Bank", AccountKind::Bank);
+    let cash = account(&f, "Cash", AccountKind::Cash);
+    cutover(&f, &[(bank, 10_000), (cash, 1_000)]);
+    let transfer = |occurred, effective| EventInput {
+        kind: EventKind::Transfer,
+        amount: 100,
+        account_id: bank,
+        destination_account_id: Some(cash),
+        category_id: None,
+        description: None,
+        occurred_on: day(occurred),
+        effective_date: day(effective),
+        original_event_id: None,
+        adjustment_delta: None,
+    };
+    let first = f
+        .post_event(id(), transfer("2026-01-02", "2026-01-05"))
+        .unwrap()
+        .result;
+    let second = f
+        .post_event(id(), transfer("2026-01-03", "2026-01-04"))
+        .unwrap()
+        .result;
+    let page = f.list_events(None, 1, 1).unwrap();
+    assert_eq!(page.total, 2);
+    assert_eq!(page.items, vec![second.clone()]);
+    for filter in [bank, cash] {
+        assert_eq!(
+            f.list_events(Some(filter), 1, 1).unwrap().items,
+            vec![first.clone()]
+        );
+        assert_eq!(
+            f.list_events(Some(filter), 2, 1).unwrap().items,
+            vec![second.clone()]
+        );
+        assert!(f.list_events(Some(filter), 3, 1).unwrap().items.is_empty());
+    }
+}
+
+#[test]
+fn unexpected_recurrence_and_schedule_source_fail_as_storage_errors() {
+    let (_dir, db) = fixture();
+    let f = Finance::new(&db);
+    let bank = account(&f, "Bank", AccountKind::Bank);
+    let card = account(&f, "Card", AccountKind::CreditCard);
+    cutover(&f, &[(bank, 1000), (card, -100)]);
+    let on = day("2026-01-02");
+    f.create_expected_flow(
+        id(),
+        ExpectedFlow {
+            account_id: bank,
+            on_date: on,
+            amount: 100,
+            label: "Salary".into(),
+            recurrence: Recurrence::Monthly,
+            certainty: Certainty::Confirmed,
+            schedule_id: None,
+            budget_category_id: None,
+        },
+    )
+    .unwrap();
+    f.create_schedule(
+        id(),
+        ScheduleInput {
+            card_id: card,
+            purchase_event_id: None,
+            opening_obligation: Some("Opening debt".into()),
+            due_date: on,
+            principal_due: 100,
+            source: ScheduleSource::Estimate,
+        },
+    )
+    .unwrap();
+    db.with_conn(|conn| {
+        conn.execute_batch(
+            "PRAGMA ignore_check_constraints=ON;
+            UPDATE expected_flows SET recurrence='future';
+            UPDATE card_schedules SET source='future';
+            PRAGMA ignore_check_constraints=OFF;",
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(f.expected_flows().unwrap_err().code, codes::STORAGE_FAILURE);
+    assert_eq!(
+        f.card_schedules(card).unwrap_err().code,
+        codes::STORAGE_FAILURE
+    );
+}
+
+#[test]
+fn payday_change_rolls_back_when_preexisting_budgets_would_collide() {
+    let (_dir, db) = fixture();
+    let f = Finance::new(&db);
+    let cat = f
+        .create_category(id(), "Food", CategoryType::Expense, None)
+        .unwrap()
+        .result
+        .id;
+    let feb = day("2028-02-25");
+    let march = day("2028-03-25");
+    for start in [feb, march] {
+        f.set_category_budget(
+            id(),
+            CategoryBudget {
+                category_id: cat,
+                cycle_start: start,
+                planned: 900,
+            },
+        )
+        .unwrap();
+    }
+    // The earlier implementation could leave an old budget behind after a payday edit.
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO category_budgets (id,category_id,cycle_start,planned)
+            VALUES (?1,?2,'2028-03-24',800)",
+            [id().to_string(), cat.to_string()],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let result = f.set_finance_settings(
+        id(),
+        FinanceSettings {
+            time_zone: "Asia/Tokyo".into(),
+            payday_day: 24,
+            default_account_id: None,
+        },
+    );
+    assert_eq!(result.unwrap_err().category, ErrorCategory::Conflict);
+    assert_eq!(f.finance_settings().unwrap().payday_day, 25);
+    assert_eq!(
+        f.budget_summary(feb).unwrap().budgets[0].terms.cycle_start,
+        feb
+    );
+    assert_eq!(
+        f.budget_summary(march).unwrap().budgets[0]
+            .terms
+            .cycle_start,
+        march
+    );
+}

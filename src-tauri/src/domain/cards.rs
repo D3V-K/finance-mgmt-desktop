@@ -13,21 +13,7 @@ pub struct CardSettings {
     pub payment_day: u32,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ScheduleSource {
-    Estimate,
-    Actual,
-}
-
-impl ScheduleSource {
-    fn value(self) -> &'static str {
-        match self {
-            Self::Estimate => "estimate",
-            Self::Actual => "actual",
-        }
-    }
-}
+stored_enum!(ScheduleSource { Estimate => "estimate", Actual => "actual" });
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -176,11 +162,7 @@ pub(super) fn schedule(
                     opening_obligation: r.get(2)?,
                     due_date: r.get(3)?,
                     principal_due: r.get(4)?,
-                    source: if r.get::<_, String>(5)? == "actual" {
-                        ScheduleSource::Actual
-                    } else {
-                        ScheduleSource::Estimate
-                    },
+                    source: ScheduleSource::read(r, 5)?,
                 },
                 optional_id(r, 6)?,
             ))
@@ -218,13 +200,35 @@ pub(super) fn schedule(
     })
 }
 
-pub(super) fn schedules_due(
+pub(super) struct CardCommitment {
+    pub schedule_id: Uuid,
+    pub settlement_account_id: Option<Uuid>,
+    pub due_date: NaiveDate,
+    pub source: ScheduleSource,
+    pub outstanding: i64,
+    pub outstanding_at_horizon: i64,
+}
+
+/// Outstanding on the start date, with known later applications accounted for
+/// separately so the forecast can include their actual postings just once.
+pub(super) fn card_commitments(
     db: &Connection,
     from: NaiveDate,
-    to: NaiveDate,
-) -> Result<Vec<(Uuid, Option<Uuid>)>, AppError> {
-    rows(db,"SELECT s.id,c.settlement_account_id FROM card_schedules s LEFT JOIN card_settings c ON c.card_id=s.card_id
-        WHERE s.due_date BETWEEN ?1 AND ?2 ORDER BY s.due_date,s.id",params![from,to],|r|Ok((id(r,0)?,optional_id(r,1)?)))
+    horizon: NaiveDate,
+) -> Result<Vec<CardCommitment>, AppError> {
+    rows(db,
+        "SELECT s.id,c.settlement_account_id,s.due_date,s.source,
+                s.principal_due-COALESCE(SUM(CASE WHEN a.effective_date<=?1 THEN a.amount ELSE 0 END),0) AS outstanding,
+                s.principal_due-COALESCE(SUM(a.amount),0)
+         FROM card_schedules s LEFT JOIN card_settings c ON c.card_id=s.card_id
+         LEFT JOIN card_applications a ON a.schedule_id=s.id AND a.effective_date<=?2
+         WHERE s.due_date<=?2 GROUP BY s.id HAVING outstanding>0
+         ORDER BY s.due_date,s.id",
+        params![from,horizon],|r| Ok(CardCommitment {
+            schedule_id:id(r,0)?,settlement_account_id:optional_id(r,1)?,due_date:r.get(2)?,
+            source:ScheduleSource::read(r,3)?,outstanding:r.get(4)?,outstanding_at_horizon:r.get(5)?,
+        }),
+    )
 }
 
 fn schedule_cap(
@@ -320,7 +324,7 @@ fn allocate(
     let (schedule, bucket) = target.bindings();
     if input.amount > 0 {
         active(&account)?;
-        let actual = balance(db, &account, input.as_of_date)?;
+        let actual = balance(db, &account, input.as_of_date, mapping_complete(db)?)?;
         let actual = actual
             .balance
             .filter(|_| actual.status == BalanceStatus::Complete)
@@ -430,7 +434,7 @@ impl Finance<'_> {
             let schedule_id=Uuid::new_v4();
             db.execute("INSERT INTO card_schedules (id,card_id,purchase_event_id,opening_obligation,due_date,principal_due,source)
                 VALUES (?1,?2,?3,?4,?5,?6,?7)",params![key(&schedule_id),key(&terms.card_id),
-                terms.purchase_event_id.as_ref().map(key),terms.opening_obligation,terms.due_date,terms.principal_due,terms.source.value()])?;
+                terms.purchase_event_id.as_ref().map(key),terms.opening_obligation,terms.due_date,terms.principal_due,terms.source.as_str()])?;
             schedule(db,schedule_id,None)
         })
     }
@@ -469,7 +473,7 @@ impl Finance<'_> {
                 schedule_cap(db, &terms, Some(schedule_id))?;
                 db.execute(
                     "UPDATE card_schedules SET due_date=?2,principal_due=?3,source=?4 WHERE id=?1",
-                    params![key(&schedule_id), due, principal, source.value()],
+                    params![key(&schedule_id), due, principal, source.as_str()],
                 )?;
                 schedule(db, schedule_id, None)
             },
@@ -849,11 +853,12 @@ impl Finance<'_> {
     pub fn allocation_capacity(&self, on: NaiveDate) -> Result<Vec<AllocationCapacity>, AppError> {
         date(on)?;
         self.read(|db| {
+            let mapping_complete = mapping_complete(db)?;
             accounts(db, true)?
                 .into_iter()
                 .filter(|a| a.kind.liquid())
                 .map(|a| {
-                    let balance = balance(db, &a, on)?;
+                    let balance = balance(db, &a, on, mapping_complete)?;
                     let funded = funded(db, a.id, Some(on))?;
                     let remaining = balance
                         .balance
