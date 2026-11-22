@@ -18,7 +18,10 @@ use chrono::{NaiveDate, Utc};
 use chrono_tz::Tz;
 use serde::Deserialize;
 
-fn resolve_today(finance: &Finance<'_>, override_date: Option<String>) -> Result<NaiveDate, AppError> {
+fn resolve_today(
+    finance: &Finance<'_>,
+    override_date: Option<String>,
+) -> Result<NaiveDate, AppError> {
     if let Some(raw) = override_date {
         return parse_date(&raw, "asOfDate");
     }
@@ -253,7 +256,13 @@ pub fn list_subscription_occurrences(
         .transpose()?;
     let finance = Finance::new(state.boot.db()?);
     let on = resolve_today(&finance, as_of_date)?;
-    finance.list_subscription_occurrences(from, to, on, subscription_id, unreconciled_only.unwrap_or(false))
+    finance.list_subscription_occurrences(
+        from,
+        to,
+        on,
+        subscription_id,
+        unreconciled_only.unwrap_or(false),
+    )
 }
 
 #[tauri::command]

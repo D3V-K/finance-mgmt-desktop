@@ -1,4 +1,6 @@
-use super::cards::{ScheduleInput, ScheduleSource, card_settings_row, day_of_month, insert_schedule, next_due_date};
+use super::cards::{
+    ScheduleInput, ScheduleSource, card_settings_row, day_of_month, insert_schedule, next_due_date,
+};
 use super::ledger::*;
 use super::review::QualityIssue;
 use super::*;
@@ -360,7 +362,10 @@ fn load_subscription(db: &Connection, subscription_id: Uuid) -> Result<Subscript
     )?)
 }
 
-fn load_subscriptions(db: &Connection, include_canceled: bool) -> Result<Vec<Subscription>, AppError> {
+fn load_subscriptions(
+    db: &Connection,
+    include_canceled: bool,
+) -> Result<Vec<Subscription>, AppError> {
     rows(
         db,
         "SELECT id,name,merchant,account_id,category_id,currency,cadence,billing_day,billing_month,
@@ -486,7 +491,12 @@ fn last_reconciled(
              WHERE subscription_id=?1 AND state='reconciled'
              ORDER BY scheduled_date DESC, settled_on DESC LIMIT 1",
             [key(&subscription_id)],
-            |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<NaiveDate>>(1)?)),
+            |r| {
+                Ok((
+                    r.get::<_, Option<i64>>(0)?,
+                    r.get::<_, Option<NaiveDate>>(1)?,
+                ))
+            },
         )
         .optional()?
         .unwrap_or((None, None)))
@@ -622,8 +632,7 @@ fn is_valid_scheduled_date(sub: &Subscription, target: NaiveDate) -> bool {
         SubscriptionCadence::Yearly => {
             let anchor_month = sub.billing_month.unwrap_or(sub.start_date.month());
             let anchor_day = sub.billing_day.unwrap_or(sub.start_date.day());
-            target.month() == anchor_month
-                && target == clamped_day(month_start(target), anchor_day)
+            target.month() == anchor_month && target == clamped_day(month_start(target), anchor_day)
         }
     }
 }
@@ -639,8 +648,8 @@ fn build_occurrences_for_subscription(
     let stored = load_stored_occurrences(db, sub.id, Some(from), Some(to))?;
     let acc = account(db, sub.account_id)?;
     let cat = category(db, sub.category_id)?;
-    let has_card_settings = acc.kind == AccountKind::CreditCard
-        && card_settings_row(db, sub.account_id)?.is_some();
+    let has_card_settings =
+        acc.kind == AccountKind::CreditCard && card_settings_row(db, sub.account_id)?.is_some();
     let (last_jpy, _) = last_reconciled(db, sub.id)?;
 
     let mut candidate_dates: BTreeSet<NaiveDate> =
@@ -717,7 +726,10 @@ fn build_list_item(
             .into_iter()
             .filter(|o| {
                 o.effective_date >= as_of_date
-                    && !matches!(o.status, OccurrenceStatus::Skipped | OccurrenceStatus::Reconciled)
+                    && !matches!(
+                        o.status,
+                        OccurrenceStatus::Skipped | OccurrenceStatus::Reconciled
+                    )
             })
             .map(|o| o.effective_date)
             .min()
@@ -797,7 +809,9 @@ fn reconcile_occurrence_in_tx(
 
     let actual_jpy = match input.actual_jpy {
         Some(v) => positive_yen(v, "actualJpy")?,
-        None if billed_currency == BillingCurrency::Jpy => positive_yen(billed_amount_minor, "actualJpy")?,
+        None if billed_currency == BillingCurrency::Jpy => {
+            positive_yen(billed_amount_minor, "actualJpy")?
+        }
         None => {
             return Err(AppError::invalid(
                 codes::INVALID_AMOUNT,
@@ -818,7 +832,11 @@ fn reconcile_occurrence_in_tx(
     )? {
         Some(custom) => custom,
         None if billed_currency.is_foreign() => {
-            format!("{} ({})", sub.name, billed_currency.format_minor(billed_amount_minor))
+            format!(
+                "{} ({})",
+                sub.name,
+                billed_currency.format_minor(billed_amount_minor)
+            )
         }
         None => sub.name.clone(),
     };
@@ -841,29 +859,28 @@ fn reconcile_occurrence_in_tx(
     )?;
 
     let acc = account(db, sub.account_id)?;
-    let schedule_id = if acc.kind == AccountKind::CreditCard
-        && input.create_card_schedule.unwrap_or(true)
-    {
-        if let Some(cfg) = card_settings_row(db, sub.account_id)? {
-            let due_date = next_due_date(cfg.closing_day, cfg.payment_day, occurred_on)?;
-            let created = insert_schedule(
-                db,
-                &ScheduleInput {
-                    card_id: sub.account_id,
-                    purchase_event_id: Some(event.id),
-                    opening_obligation: None,
-                    due_date,
-                    principal_due: actual_jpy,
-                    source: ScheduleSource::Estimate,
-                },
-            )?;
-            Some(created.id)
+    let schedule_id =
+        if acc.kind == AccountKind::CreditCard && input.create_card_schedule.unwrap_or(true) {
+            if let Some(cfg) = card_settings_row(db, sub.account_id)? {
+                let due_date = next_due_date(cfg.closing_day, cfg.payment_day, occurred_on)?;
+                let created = insert_schedule(
+                    db,
+                    &ScheduleInput {
+                        card_id: sub.account_id,
+                        purchase_event_id: Some(event.id),
+                        opening_obligation: None,
+                        due_date,
+                        principal_due: actual_jpy,
+                        source: ScheduleSource::Estimate,
+                    },
+                )?;
+                Some(created.id)
+            } else {
+                None
+            }
         } else {
             None
-        }
-    } else {
-        None
-    };
+        };
 
     let stamp = now();
     let occ_id = Uuid::new_v4();
@@ -910,8 +927,8 @@ fn single_occurrence_view(
     let revisions = load_revisions(db, sub.id)?;
     let acc = account(db, sub.account_id)?;
     let cat = category(db, sub.category_id)?;
-    let has_card_settings = acc.kind == AccountKind::CreditCard
-        && card_settings_row(db, sub.account_id)?.is_some();
+    let has_card_settings =
+        acc.kind == AccountKind::CreditCard && card_settings_row(db, sub.account_id)?.is_some();
     let (last_jpy, _) = last_reconciled(db, sub.id)?;
     let override_date = stored.as_ref().and_then(|s| s.override_date);
     let effective_date = override_date.unwrap_or(scheduled_date);
@@ -958,7 +975,9 @@ fn single_occurrence_view(
     })
 }
 
-fn summarize_foreign(items: impl IntoIterator<Item = (BillingCurrency, i64)>) -> Result<Vec<ForeignCurrencySummary>, AppError> {
+fn summarize_foreign(
+    items: impl IntoIterator<Item = (BillingCurrency, i64)>,
+) -> Result<Vec<ForeignCurrencySummary>, AppError> {
     let mut grouped = BTreeMap::<String, (BillingCurrency, usize, Vec<i64>)>::new();
     for (currency, minor) in items {
         if !currency.is_foreign() {
@@ -999,9 +1018,7 @@ pub(super) fn forecast_items(
     let mut movements = Vec::new();
     let mut missing_card_settings = false;
     let mut foreign_entries = Vec::new();
-    let card_lookback = from
-        .checked_sub_days(Days::new(65))
-        .unwrap_or(from);
+    let card_lookback = from.checked_sub_days(Days::new(65)).unwrap_or(from);
 
     for sub in &subs {
         let acc = account(db, sub.account_id)?;
@@ -1012,7 +1029,10 @@ pub(super) fn forecast_items(
         };
         let occurrences = build_occurrences_for_subscription(db, sub, scan_from, to, from)?;
         for occ in occurrences {
-            if matches!(occ.status, OccurrenceStatus::Skipped | OccurrenceStatus::Reconciled) {
+            if matches!(
+                occ.status,
+                OccurrenceStatus::Skipped | OccurrenceStatus::Reconciled
+            ) {
                 continue;
             }
             if occ.billed_currency.is_foreign() {
@@ -1080,7 +1100,10 @@ pub(super) fn availability_items(
         let acc = account(db, sub.account_id)?;
         let occurrences = build_occurrences_for_subscription(db, sub, on, horizon, on)?;
         for occ in occurrences {
-            if matches!(occ.status, OccurrenceStatus::Skipped | OccurrenceStatus::Reconciled) {
+            if matches!(
+                occ.status,
+                OccurrenceStatus::Skipped | OccurrenceStatus::Reconciled
+            ) {
                 continue;
             }
             if !(on..=horizon).contains(&occ.effective_date) {
@@ -1116,8 +1139,10 @@ pub(super) fn confirmed_jpy_bills_in_range(
     {
         let occurrences = build_occurrences_for_subscription(db, &sub, from, to, from)?;
         for occ in occurrences {
-            if !matches!(occ.status, OccurrenceStatus::Skipped | OccurrenceStatus::Reconciled)
-                && (from..=to).contains(&occ.effective_date)
+            if !matches!(
+                occ.status,
+                OccurrenceStatus::Skipped | OccurrenceStatus::Reconciled
+            ) && (from..=to).contains(&occ.effective_date)
             {
                 charges.push(occ.billed_amount_minor);
             }
@@ -1126,7 +1151,10 @@ pub(super) fn confirmed_jpy_bills_in_range(
     total(charges)
 }
 
-pub(super) fn quality_issues(db: &Connection, on: NaiveDate) -> Result<Vec<QualityIssue>, AppError> {
+pub(super) fn quality_issues(
+    db: &Connection,
+    on: NaiveDate,
+) -> Result<Vec<QualityIssue>, AppError> {
     let mut issues = Vec::new();
     // 1. Reconciled occurrences whose linked financial event was later reversed.
     let reversed_links = rows(
@@ -1157,8 +1185,7 @@ pub(super) fn quality_issues(db: &Connection, on: NaiveDate) -> Result<Vec<Quali
             if scan_from > prev_end {
                 continue;
             }
-            let occurrences =
-                build_occurrences_for_subscription(db, sub, scan_from, prev_end, on)?;
+            let occurrences = build_occurrences_for_subscription(db, sub, scan_from, prev_end, on)?;
             let has_overdue = occurrences.iter().any(|occ| {
                 occ.effective_date < current_month_start
                     && matches!(
@@ -1379,7 +1406,13 @@ impl Finance<'_> {
                 "INSERT INTO subscription_plan_revisions
                     (id,subscription_id,effective_from,amount_minor,revision,reason,recorded_at)
                  VALUES (?1,?2,?3,?4,1,'Initial plan',?5)",
-                params![key(&rev_id), key(&sub_id), input.start_date, amount_minor, stamp],
+                params![
+                    key(&rev_id),
+                    key(&sub_id),
+                    input.start_date,
+                    amount_minor,
+                    stamp
+                ],
             )?;
             let sub = load_subscription(db, sub_id)?;
             build_list_item(db, &sub, input.start_date)
@@ -1432,7 +1465,10 @@ impl Finance<'_> {
                 ));
             }
             let revisions = load_revisions(db, sub.id)?;
-            if revisions.iter().any(|r| r.effective_from == input.effective_from) {
+            if revisions
+                .iter()
+                .any(|r| r.effective_from == input.effective_from)
+            {
                 return Err(blocked(
                     "A price revision already exists for that effective date.",
                 ));
@@ -1540,7 +1576,10 @@ impl Finance<'_> {
             for sub in &subs {
                 for occ in build_occurrences_for_subscription(db, sub, from, to, as_of_date)? {
                     if unreconciled_only
-                        && matches!(occ.status, OccurrenceStatus::Reconciled | OccurrenceStatus::Skipped)
+                        && matches!(
+                            occ.status,
+                            OccurrenceStatus::Reconciled | OccurrenceStatus::Skipped
+                        )
                     {
                         continue;
                     }
@@ -1647,7 +1686,10 @@ impl Finance<'_> {
     ) -> Result<WriteResponse<Vec<ReconciledCharge>>, AppError> {
         self.write(request, "reconcile_subscription_batch", &input, |db| {
             if input.items.is_empty() {
-                return Err(invalid("items", "Select at least one subscription cycle to reconcile."));
+                return Err(invalid(
+                    "items",
+                    "Select at least one subscription cycle to reconcile.",
+                ));
             }
             let mut seen = BTreeSet::new();
             for item in &input.items {

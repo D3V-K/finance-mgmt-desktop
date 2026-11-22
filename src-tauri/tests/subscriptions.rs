@@ -149,9 +149,21 @@ fn cadence_clamping_plan_revisions_and_pause_cancel_boundaries() {
     assert_eq!(
         summary,
         vec![
-            (day("2026-01-31"), 2000, OccurrenceStatus::NeedsReconciliation),
-            (day("2026-02-28"), 2000, OccurrenceStatus::NeedsReconciliation),
-            (day("2026-03-31"), 2500, OccurrenceStatus::NeedsReconciliation),
+            (
+                day("2026-01-31"),
+                2000,
+                OccurrenceStatus::NeedsReconciliation
+            ),
+            (
+                day("2026-02-28"),
+                2000,
+                OccurrenceStatus::NeedsReconciliation
+            ),
+            (
+                day("2026-03-31"),
+                2500,
+                OccurrenceStatus::NeedsReconciliation
+            ),
             (day("2026-04-30"), 2500, OccurrenceStatus::Upcoming),
         ]
     );
@@ -485,7 +497,10 @@ fn forecast_availability_avoid_fake_usd_and_avoid_card_double_counting() {
     assert_eq!(bank_avail.unfunded_known_due, 5_000);
     assert_eq!(bank_avail.spendable, Some(195_000));
     assert_eq!(avail.unreconciled_foreign_subscriptions.len(), 1);
-    assert_eq!(avail.unreconciled_foreign_subscriptions[0].total_minor, 2000);
+    assert_eq!(
+        avail.unreconciled_foreign_subscriptions[0].total_minor,
+        2000
+    );
 
     // Now reconcile the Feb 5 iCloud+ JPY card charge (defaults actual_jpy = 1_300 & creates card_schedule for Mar 10)
     f.reconcile_subscription_occurrence(

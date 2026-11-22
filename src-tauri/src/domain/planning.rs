@@ -602,7 +602,10 @@ fn forecast(
     let mut movements = expected_movements(db, &flows, from, to, scenario)?;
     let sub_forecast = subscriptions::forecast_items(db, from, to)?;
     for (account_id, on, movement) in sub_forecast.movements {
-        movements.entry((account_id, on)).or_default().push(movement);
+        movements
+            .entry((account_id, on))
+            .or_default()
+            .push(movement);
     }
     let card_timing = budget_movements(db, &flows, from, to, cfg.payday_day, &mut movements)?;
     let mut missing_bank = sub_forecast.missing_card_settings;
