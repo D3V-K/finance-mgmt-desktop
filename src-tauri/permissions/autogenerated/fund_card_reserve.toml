@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-fund-card-reserve"
+description = "Enables the fund_card_reserve command without any pre-configured scope."
+commands.allow = ["fund_card_reserve"]
+
+[[permission]]
+identifier = "deny-fund-card-reserve"
+description = "Denies the fund_card_reserve command without any pre-configured scope."
+commands.deny = ["fund_card_reserve"]

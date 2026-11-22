@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-fund-savings-bucket"
+description = "Enables the fund_savings_bucket command without any pre-configured scope."
+commands.allow = ["fund_savings_bucket"]
+
+[[permission]]
+identifier = "deny-fund-savings-bucket"
+description = "Denies the fund_savings_bucket command without any pre-configured scope."
+commands.deny = ["fund_savings_bucket"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-expected-flows"
+description = "Enables the list_expected_flows command without any pre-configured scope."
+commands.allow = ["list_expected_flows"]
+
+[[permission]]
+identifier = "deny-list-expected-flows"
+description = "Denies the list_expected_flows command without any pre-configured scope."
+commands.deny = ["list_expected_flows"]

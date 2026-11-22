@@ -1,11 +1,26 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { getAppStatus, getProfile, getStorageStatus, getSystemInfo, toAppError } from './lib/commands';
+  import { onMount, tick } from 'svelte';
+  import './lib/tokens.css';
+  import './lib/base.css';
+  import { app, NAV, NAV_GROUPS, PLANNED, routeFor, type RouteName } from './lib/app.svelte';
+  import { getAppStatus, getProfile, getStorageStatus, toAppError } from './lib/commands';
+  import type { AppError, StorageStatus } from './lib/types';
+  import Overview from './screens/Overview.svelte';
+  import Accounts from './screens/Accounts.svelte';
+  import CashFlow from './screens/CashFlow.svelte';
+  import Categories from './screens/Categories.svelte';
+  import Budgets from './screens/Budgets.svelte';
+  import Cards from './screens/Cards.svelte';
+  import Forecast from './screens/Forecast.svelte';
+  import Reconciliation from './screens/Reconciliation.svelte';
+  import Investments from './screens/Investments.svelte';
+  import Quality from './screens/Quality.svelte';
   import SubscriptionsView from './components/subscriptions/SubscriptionsView.svelte';
-  import type { AppError, Profile, StorageStatus, SystemInfo } from './lib/types';
+  import LedgerStart from './screens/LedgerStart.svelte';
+  import QuickEntry from './screens/QuickEntry.svelte';
+  import ShortcutHelp from './screens/ShortcutHelp.svelte';
 
   type Phase = 'starting' | 'blocked' | 'ready';
-  type Section = 'overview' | 'subscriptions';
 
   /** Startup failures are terminal for this launch: copy explains the safe next step. */
   const BLOCKED_COPY: Record<string, { title: string; body: string }> = {
@@ -28,18 +43,16 @@
   };
 
   let phase = $state<Phase>('starting');
-  let activeSection = $state<Section>('overview');
-  let pendingReconciliations = $state(0);
   let startupError = $state<AppError | null>(null);
-  let systemInfo = $state<SystemInfo | null>(null);
-  let profile = $state<Profile | null>(null);
-  let storageStatus = $state<StorageStatus | null>(null);
-  let error = $state<AppError | null>(null);
-  let isLoading = $state(false);
+  let profileError = $state<AppError | null>(null);
+  let storage = $state<StorageStatus | null>(null);
+  /** Due subscription charges awaiting month-end reconciliation (sidebar badge). */
+  let pendingReconciliations = $state(0);
 
-  const blockedCopy = $derived(
-    startupError ? (BLOCKED_COPY[startupError.code] ?? DEFAULT_BLOCKED) : DEFAULT_BLOCKED,
-  );
+  const blockedCopy = $derived(startupError ? (BLOCKED_COPY[startupError.code] ?? DEFAULT_BLOCKED) : DEFAULT_BLOCKED);
+  const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
+  const mod = isMac ? '⌘' : 'Ctrl';
+  const title = $derived(NAV.find((n) => n.name === app.route.name)?.label ?? '');
 
   async function start() {
     try {
@@ -54,23 +67,59 @@
       phase = 'blocked';
       return;
     }
-    phase = 'ready';
-    await loadState();
+    await loadProfile();
   }
 
-  async function loadState() {
-    isLoading = true;
-    error = null;
+  async function loadProfile() {
+    profileError = null;
     try {
-      [systemInfo, profile, storageStatus] = await Promise.all([
-        getSystemInfo(),
-        getProfile(),
-        getStorageStatus(),
-      ]);
-    } catch (err: unknown) {
-      error = toAppError(err);
-    } finally {
-      isLoading = false;
+      const profile = await getProfile();
+      app.today = profile.today;
+      app.timeZone = profile.timeZone;
+      app.storageIssue = null;
+      phase = 'ready';
+      storage = await getStorageStatus().catch(() => null);
+    } catch (err) {
+      profileError = toAppError(err);
+      app.today = '';
+      phase = 'ready';
+    }
+  }
+
+  // Reference data (accounts, categories) refreshes after every write.
+  $effect(() => {
+    void app.revision;
+    if (phase === 'ready' && app.today) void app.loadReferences();
+  });
+
+  async function navigate(name: RouteName) {
+    app.go(routeFor(name));
+    await tick();
+    document.querySelector<HTMLElement>('#main h1')?.focus();
+  }
+
+  function isTyping(target: EventTarget | null) {
+    return target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName));
+  }
+
+  function onKeydown(e: KeyboardEvent) {
+    if (phase !== 'ready' || !app.today || e.isComposing) return;
+    if (app.entryOpen || app.helpOpen || document.querySelector('dialog[open]')) return;
+    const modKey = isMac ? e.metaKey : e.ctrlKey;
+    if (modKey && e.key.toLowerCase() === 'n') {
+      e.preventDefault();
+      app.entryOpen = true;
+      return;
+    }
+    const nav = modKey ? NAV.find((n) => n.shortcut === e.key) : undefined;
+    if (nav) {
+      e.preventDefault();
+      void navigate(nav.name);
+      return;
+    }
+    if (e.key === '?' && !isTyping(e.target)) {
+      e.preventDefault();
+      app.helpOpen = true;
     }
   }
 
@@ -79,311 +128,186 @@
   });
 </script>
 
-<main class="shell">
-    <header class="app-header">
-    <div class="header-brand">
-      <span class="badge">Offline</span>
-      <h1 class="app-title">Finance Desktop</h1>
-      {#if phase === 'ready'}
-        <nav class="primary-nav" aria-label="Primary sections">
-          <button
-            type="button"
-            class:active={activeSection === 'overview'}
-            aria-current={activeSection === 'overview' ? 'page' : undefined}
-            onclick={() => (activeSection = 'overview')}
-          >
-            Overview
-          </button>
-          <button
-            type="button"
-            class:active={activeSection === 'subscriptions'}
-            aria-current={activeSection === 'subscriptions' ? 'page' : undefined}
-            onclick={() => (activeSection = 'subscriptions')}
-          >
-            Subscriptions
-            {#if pendingReconciliations > 0}
-              <span class="nav-pill">{pendingReconciliations}</span>
-            {/if}
-          </button>
-        </nav>
-      {/if}
-    </div>
-    {#if systemInfo && profile}
-      <div class="system-meta" data-testid="system-meta">
-        <span>v{systemInfo.appVersion}</span>
-        <span class="divider">·</span>
-        <span>{profile.today} ({profile.timeZone})</span>
-      </div>
-    {/if}
-  </header>
+<svelte:window onkeydown={onKeydown} />
+<svelte:head><title>{title ? `${title} · ` : ''}Finance Desktop</title></svelte:head>
 
-  {#if phase === 'starting'}
-    <div class="loading-state" role="status" data-testid="loading-state">
-      <p>Opening your local data …</p>
-    </div>
-  {:else if phase === 'blocked'}
+{#if phase === 'starting'}
+  <div class="center" role="status" data-testid="loading-state"><p>Opening your local data …</p></div>
+{:else if phase === 'blocked'}
+  <div class="center">
     <section class="blocked" role="alert" aria-labelledby="blocked-title" data-testid="startup-blocked">
+      <h1 class="app-title">Finance Desktop</h1>
       <h2 id="blocked-title">{blockedCopy.title}</h2>
       <p>{blockedCopy.body}</p>
-      {#if startupError}
-        <p class="category-tag">Reference: {startupError.code}</p>
-      {/if}
+      {#if startupError}<p class="muted small">Reference: {startupError.code}</p>{/if}
     </section>
-  {:else}
-    {#if error}
-      <div class="banner banner-error" role="alert" data-testid="error-banner">
-        <div class="banner-content">
-          <strong>Error: {error.code}</strong>
-          <p>{error.message}</p>
-          <span class="category-tag">Category: {error.category}</span>
-        </div>
-        <button class="retry-btn" onclick={loadState}>Try again</button>
+  </div>
+{:else if !app.today}
+  <div class="center">
+    <section class="blocked" role="alert" data-testid="error-banner">
+      <h1 class="app-title">Finance Desktop</h1>
+      <h2>Your profile could not be read</h2>
+      <p>{profileError?.message ?? 'The local profile is unavailable.'} Nothing has been changed.</p>
+      {#if profileError}<p class="muted small">Reference: {profileError.code}</p>{/if}
+      <div><button class="btn primary" onclick={loadProfile}>Try again</button></div>
+    </section>
+  </div>
+{:else}
+  <a class="skip" href="#main">Skip to content</a>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="mark" aria-hidden="true"></span><span class="app-title">Finance Desktop</span></div>
+      <nav aria-label="Sections">
+        {#each NAV_GROUPS as group (group.group)}
+          <p class="eyebrow" id="nav-{group.group}">{group.group}</p>
+          <ul aria-labelledby="nav-{group.group}">
+            {#each group.items as item (item.name)}
+              <li>
+                <a
+                  href="#{item.name}"
+                  aria-current={app.route.name === item.name ? 'page' : undefined}
+                  aria-keyshortcuts={item.shortcut ? `${isMac ? 'Meta' : 'Control'}+${item.shortcut}` : undefined}
+                  onclick={(e) => {
+                    e.preventDefault();
+                    void navigate(item.name);
+                  }}
+                >
+                  <span>{item.label}</span>
+                  {#if item.name === 'subscriptions' && pendingReconciliations > 0}
+                    <span class="nav-pill" aria-label="{pendingReconciliations} to reconcile">{pendingReconciliations}</span>
+                  {/if}
+                  {#if item.shortcut}<kbd aria-hidden="true">{mod}{item.shortcut}</kbd>{/if}
+                </a>
+              </li>
+            {/each}
+          </ul>
+        {/each}
+        <ul class="planned" aria-label="Planned">
+          {#each PLANNED as item (item)}<li>{item}<span class="muted small"> · coming later</span></li>{/each}
+        </ul>
+      </nav>
+      <div class="offline" role="note">
+        <span class="dot" aria-hidden="true"></span>
+        <span>Offline · this device only<br /><span class="muted">No account or network used</span></span>
       </div>
-    {/if}
+    </aside>
 
-    <section class="content" aria-busy={isLoading}>
-      {#if isLoading}
-        <div class="loading-state" data-testid="loading-state">
-          <p>Loading local status …</p>
+    <div class="main-col">
+      <header class="topbar">
+        <label class="theme">
+          <span class="sr-only">Theme</span>
+          <select value={app.theme} onchange={(e) => app.setTheme(e.currentTarget.value as typeof app.theme)}>
+            <option value="system">System theme</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </label>
+        <div class="actions">
+          <button class="btn ghost small" onclick={() => (app.helpOpen = true)} aria-keyshortcuts="?">Shortcuts <kbd>?</kbd></button>
+          <button class="btn primary" onclick={() => (app.entryOpen = true)} aria-keyshortcuts={isMac ? 'Meta+N' : 'Control+N'}>
+            New entry <kbd class="on-accent">{mod}N</kbd>
+          </button>
         </div>
-      {:else if activeSection === 'subscriptions' && profile}
-        <SubscriptionsView
-          today={profile.today}
-          onpendingchange={(count) => (pendingReconciliations = count)}
-        />
-      {:else if storageStatus}
-        <div class="status-grid" data-testid="storage-grid">
-          <div class="status-card">
-            <span class="card-label">Storage Engine</span>
-            <strong class="card-value">SQLite (WAL mode: {storageStatus.isWalEnabled ? 'Enabled' : 'Disabled'})</strong>
-            <span class="card-subtext">Status: {storageStatus.status}</span>
+      </header>
+
+      {#if app.storageIssue}
+        <div class="storage-banner" role="alert" data-testid="storage-banner">
+          <div>
+            <strong>Local storage is not responding.</strong>
+            {app.storageIssue.message} Nothing was changed.
+            <span class="muted small">Reference: {app.storageIssue.code}</span>
           </div>
-
-          <div class="status-card">
-            <span class="card-label">Migration Level</span>
-            <strong class="card-value">Version {storageStatus.migrationVersion}</strong>
-            <span class="card-subtext">Offline schema ready</span>
-          </div>
-
-          {#if systemInfo}
-            <div class="status-card">
-              <span class="card-label">Platform Target</span>
-              <strong class="card-value">{systemInfo.osTarget}</strong>
-              <span class="card-subtext">Data stays on this computer</span>
-            </div>
-          {/if}
-        </div>
-
-        <div class="welcome-box">
-          <h2>Local Application Runtime Active</h2>
-          <p>
-            Finance Desktop operates fully offline without remote AWS cloud services.
-            All data transactions and financial calculations are processed locally.
-          </p>
+          <button
+            class="btn small"
+            onclick={() => {
+              app.storageIssue = null;
+              app.changed();
+            }}>Try again</button
+          >
         </div>
       {/if}
-    </section>
-  {/if}
-</main>
+
+      <main id="main" tabindex="-1">
+        {#if app.route.name === 'overview'}
+          <Overview />
+        {:else if app.route.name === 'accounts'}
+          <Accounts selectedId={app.route.accountId} />
+        {:else if app.route.name === 'cashflow'}
+          <CashFlow />
+        {:else if app.route.name === 'categories'}
+          <Categories />
+        {:else if app.route.name === 'budgets'}
+          <Budgets />
+        {:else if app.route.name === 'cards'}
+          <Cards cardId={app.route.cardId} />
+        {:else if app.route.name === 'forecast'}
+          <Forecast />
+        {:else if app.route.name === 'reconciliation'}
+          <Reconciliation reconciliationId={app.route.reconciliationId} />
+        {:else if app.route.name === 'investments'}
+          <Investments />
+        {:else if app.route.name === 'quality'}
+          <Quality />
+        {:else if app.route.name === 'subscriptions'}
+          <SubscriptionsView today={app.today} onpendingchange={(count) => (pendingReconciliations = count)} />
+        {:else}
+          <LedgerStart />
+        {/if}
+      </main>
+
+      <footer class="statusbar" data-testid="system-meta">
+        <span>Today {app.today} ({app.timeZone}) · amounts in whole JPY</span>
+        {#if storage}<span>SQLite · schema v{storage.migrationVersion}</span>{/if}
+      </footer>
+    </div>
+  </div>
+
+  <QuickEntry open={app.entryOpen} onclose={() => (app.entryOpen = false)} />
+  <ShortcutHelp open={app.helpOpen} {mod} onclose={() => (app.helpOpen = false)} />
+
+  <div class="toasts" role="status" aria-live="polite">
+    {#each app.toasts as t (t.id)}
+      <div class="toast {t.tone}">
+        <span>{t.message}</span>
+        <button class="btn ghost small" aria-label="Dismiss notification" onclick={() => app.dismiss(t.id)}>✕</button>
+      </div>
+    {/each}
+  </div>
+{/if}
 
 <style>
-  :global(body) {
-    margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Hiragino Sans", "Noto Sans JP", sans-serif;
-    background-color: #f7f9fa;
-    color: #1a202c;
-    min-width: 960px;
-  }
-
-  .shell {
-    max-width: 1200px;
-    margin: 0 auto;
-    padding: 2rem;
-  }
-
-  .app-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    border-bottom: 1px solid #e2e8f0;
-    padding-bottom: 1rem;
-    margin-bottom: 1.5rem;
-  }
-
-  .header-brand {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-  }
-
-  .primary-nav {
-    display: flex;
-    gap: 0.35rem;
-    margin-left: 1rem;
-  }
-
-  .primary-nav button {
-    border: 1px solid transparent;
-    background: transparent;
-    color: #475569;
-    font-weight: 600;
-    font-size: 0.875rem;
-    padding: 0.4rem 0.75rem;
-    border-radius: 6px;
-    cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-  }
-
-  .primary-nav button.active {
-    background: #eff6ff;
-    color: #1d4ed8;
-    border-color: #bfdbfe;
-  }
-
-  .nav-pill {
-    background: #d97706;
-    color: #ffffff;
-    font-size: 0.72rem;
-    padding: 0.05rem 0.4rem;
-    border-radius: 9999px;
-  }
-
-  .badge {
-    background-color: #047857;
-    color: #ffffff;
-    font-size: 0.75rem;
-    font-weight: 600;
-    padding: 0.2rem 0.5rem;
-    border-radius: 9999px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-
-  .app-title {
-    font-size: 1.5rem;
-    margin: 0;
-    font-weight: 700;
-  }
-
-  .system-meta {
-    font-size: 0.875rem;
-    color: #64748b;
-  }
-
-  .divider {
-    margin: 0 0.5rem;
-  }
-
-  .banner {
-    padding: 1rem;
-    border-radius: 8px;
-    margin-bottom: 1.5rem;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
-
-  .banner-error {
-    background-color: #fef2f2;
-    border: 1px solid #fecaca;
-    color: #991b1b;
-  }
-
-  .banner-content p {
-    margin: 0.25rem 0;
-  }
-
-  .category-tag {
-    font-size: 0.75rem;
-    opacity: 0.85;
-  }
-
-  .retry-btn {
-    background-color: #dc2626;
-    color: white;
-    border: none;
-    padding: 0.5rem 1rem;
-    border-radius: 6px;
-    cursor: pointer;
-    font-weight: 600;
-  }
-
-  .status-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-    gap: 1rem;
-    margin-bottom: 1.5rem;
-  }
-
-  .status-card {
-    background: #ffffff;
-    border: 1px solid #e2e8f0;
-    border-radius: 8px;
-    padding: 1.25rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
-  }
-
-  .card-label {
-    font-size: 0.8125rem;
-    color: #64748b;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-
-  .card-value {
-    font-size: 1.125rem;
-    color: #0f172a;
-  }
-
-  .card-subtext {
-    font-size: 0.8125rem;
-    color: #94a3b8;
-  }
-
-  .welcome-box {
-    background: #ffffff;
-    border: 1px solid #e2e8f0;
-    border-radius: 8px;
-    padding: 1.5rem;
-  }
-
-  .welcome-box h2 {
-    margin-top: 0;
-    font-size: 1.125rem;
-  }
-
-  .welcome-box p {
-    color: #475569;
-    line-height: 1.5;
-    margin-bottom: 0;
-  }
-
-  .blocked {
-    background: #ffffff;
-    border: 1px solid #fecaca;
-    border-left: 4px solid #dc2626;
-    border-radius: 8px;
-    padding: 1.5rem;
-    max-width: 40rem;
-  }
-
-  .blocked h2 {
-    margin-top: 0;
-    font-size: 1.25rem;
-  }
-
-  .blocked p {
-    color: #475569;
-    line-height: 1.5;
-  }
-
-  .loading-state {
-    padding: 3rem;
-    text-align: center;
-    color: #64748b;
-  }
+  .center { min-height: 100vh; display: grid; place-items: center; padding: var(--space-6); }
+  .blocked { max-width: 520px; display: grid; gap: var(--space-3); padding: var(--space-6); background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--state-error); border-radius: var(--radius-lg); }
+  .small { font-size: var(--text-xs); }
+  .skip { position: absolute; left: -999px; top: 8px; z-index: 10; background: var(--accent); color: var(--accent-ink); padding: 8px 12px; border-radius: var(--radius-md); }
+  .skip:focus { left: 8px; }
+  .shell { display: grid; grid-template-columns: var(--sidebar-width) 1fr; height: 100vh; }
+  .sidebar { background: var(--surface-sunken); border-right: 1px solid var(--border); padding: var(--space-4) var(--space-3); display: flex; flex-direction: column; gap: var(--space-4); overflow-y: auto; }
+  .brand { display: flex; align-items: center; gap: var(--space-2); padding: 0 var(--space-2); }
+  .app-title { font-size: var(--text-lg); font-weight: 680; }
+  .mark { width: 18px; height: 18px; border-radius: 5px; background: conic-gradient(var(--accent) 0 75%, var(--chart-in) 0); flex: none; }
+  nav { display: grid; gap: var(--space-1); }
+  nav .eyebrow { padding: var(--space-2) var(--space-2) 2px; }
+  nav ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+  nav a { display: flex; justify-content: space-between; align-items: center; padding: 6px var(--space-2); border-radius: var(--radius-md); color: var(--ink-2); text-decoration: none; font-weight: 560; }
+  nav a:hover { background: var(--surface); color: var(--ink); }
+  nav a[aria-current='page'] { background: var(--surface); color: var(--ink); box-shadow: inset 3px 0 0 var(--accent), var(--shadow); }
+  nav kbd { opacity: 0.7; }
+  .nav-pill { margin-left: auto; margin-right: var(--space-2); background: var(--accent); color: var(--surface); font-size: 0.72rem; padding: 0 0.4rem; border-radius: 9999px; }
+  nav ul.planned { padding: var(--space-2) var(--space-2) 0; }
+  .planned li { color: var(--ink-3); font-size: var(--text-sm); }
+  .offline { margin-top: auto; display: flex; gap: var(--space-2); font-size: var(--text-xs); padding: var(--space-2); color: var(--ink-2); }
+  .dot { width: 8px; height: 8px; margin-top: 4px; border-radius: 50%; background: var(--state-ok); flex: none; }
+  .main-col { display: grid; grid-template-rows: auto auto 1fr auto; min-width: 0; min-height: 0; }
+  .topbar { display: flex; justify-content: space-between; align-items: center; gap: var(--space-4); padding: var(--space-2) var(--space-5); border-bottom: 1px solid var(--border); background: var(--surface); }
+  .theme select { min-height: 28px; font-size: var(--text-sm); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); padding: 0 6px; }
+  .actions { display: flex; gap: var(--space-2); align-items: center; }
+  kbd.on-accent { background: transparent; color: inherit; border-color: currentColor; opacity: 0.8; }
+  .storage-banner { display: flex; justify-content: space-between; align-items: center; gap: var(--space-4); padding: var(--space-3) var(--space-5); background: var(--state-error-bg); border-bottom: 1px solid var(--state-error); }
+  main { overflow-y: auto; padding: var(--space-5) var(--space-6) var(--space-7); outline: none; }
+  .statusbar { display: flex; justify-content: space-between; padding: 4px var(--space-5); font-size: var(--text-xs); color: var(--ink-3); border-top: 1px solid var(--border); background: var(--surface-sunken); }
+  .toasts { position: fixed; right: var(--space-5); bottom: var(--space-7); display: grid; gap: var(--space-2); z-index: 20; }
+  .toast { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-2) var(--space-2) var(--space-4); border-radius: var(--radius-md); background: var(--ink); color: var(--bg); box-shadow: var(--shadow); font-weight: 560; }
+  .toast .btn { color: inherit; }
+  .toast.error { background: var(--state-error); color: #fff; }
 </style>

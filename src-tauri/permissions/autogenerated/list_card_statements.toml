@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-card-statements"
+description = "Enables the list_card_statements command without any pre-configured scope."
+commands.allow = ["list_card_statements"]
+
+[[permission]]
+identifier = "deny-list-card-statements"
+description = "Denies the list_card_statements command without any pre-configured scope."
+commands.deny = ["list_card_statements"]

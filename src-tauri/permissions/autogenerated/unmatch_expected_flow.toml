@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-unmatch-expected-flow"
+description = "Enables the unmatch_expected_flow command without any pre-configured scope."
+commands.allow = ["unmatch_expected_flow"]
+
+[[permission]]
+identifier = "deny-unmatch-expected-flow"
+description = "Denies the unmatch_expected_flow command without any pre-configured scope."
+commands.deny = ["unmatch_expected_flow"]

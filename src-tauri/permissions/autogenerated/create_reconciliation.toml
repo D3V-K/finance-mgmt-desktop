@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-create-reconciliation"
+description = "Enables the create_reconciliation command without any pre-configured scope."
+commands.allow = ["create_reconciliation"]
+
+[[permission]]
+identifier = "deny-create-reconciliation"
+description = "Denies the create_reconciliation command without any pre-configured scope."
+commands.deny = ["create_reconciliation"]

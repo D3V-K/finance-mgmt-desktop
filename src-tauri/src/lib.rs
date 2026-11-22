@@ -35,6 +35,98 @@ fn focus_main(app: &tauri::AppHandle) {
     }
 }
 
+/// Registers every renderer-callable command. Shared by the app and the IPC
+/// tests so both exercise exactly the same handler table.
+pub fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
+    builder.invoke_handler(tauri::generate_handler![
+        commands::system::get_app_status,
+        commands::system::get_system_info,
+        commands::system::get_storage_status,
+        commands::profile::get_profile,
+        commands::ledger::list_categories,
+        commands::ledger::create_category,
+        commands::ledger::update_category,
+        commands::ledger::delete_category,
+        commands::ledger::archive_category,
+        commands::ledger::list_accounts,
+        commands::ledger::create_account,
+        commands::ledger::archive_account,
+        commands::ledger::set_account_opening,
+        commands::ledger::list_opening_revisions,
+        commands::ledger::get_account_balance,
+        commands::ledger::create_financial_event,
+        commands::ledger::reverse_financial_event,
+        commands::ledger::replace_financial_event,
+        commands::ledger::get_financial_event,
+        commands::ledger::list_financial_events,
+        commands::ledger::get_canonical_monthly,
+        commands::ledger::get_canonical_by_category,
+        commands::legacy::list_legacy_records,
+        commands::legacy::get_legacy_reports,
+        commands::legacy::get_legacy_by_category,
+        commands::legacy::get_legacy_balance,
+        commands::legacy::preview_cutover,
+        commands::legacy::confirm_cutover,
+        commands::legacy::list_legacy_provenance,
+        commands::legacy::preview_legacy_resolution,
+        commands::legacy::confirm_legacy_resolution,
+        commands::cards::get_card_settings,
+        commands::cards::set_card_settings,
+        commands::cards::list_card_schedules,
+        commands::cards::create_card_schedule,
+        commands::cards::revise_card_schedule,
+        commands::cards::list_card_statements,
+        commands::cards::confirm_card_statement,
+        commands::cards::apply_card_event,
+        commands::cards::fund_card_reserve,
+        commands::cards::list_savings_goals,
+        commands::cards::save_savings_goal,
+        commands::cards::list_savings_buckets,
+        commands::cards::save_savings_bucket,
+        commands::cards::fund_savings_bucket,
+        commands::cards::get_allocation_capacity,
+        commands::planning::get_finance_settings,
+        commands::planning::set_finance_settings,
+        commands::planning::set_payday_override,
+        commands::planning::get_budget_summary,
+        commands::planning::set_category_budget,
+        commands::planning::set_budget_payment_account,
+        commands::planning::list_expected_flows,
+        commands::planning::create_expected_flow,
+        commands::planning::override_expected_flow,
+        commands::planning::match_expected_flow,
+        commands::planning::unmatch_expected_flow,
+        commands::planning::get_cash_forecast,
+        commands::planning::get_available_cash,
+        commands::planning::get_dashboard,
+        commands::review::record_valuation,
+        commands::review::list_valuations,
+        commands::review::mark_holdings_change,
+        commands::review::get_financial_position,
+        commands::review::get_position_history,
+        commands::review::preview_reconciliation,
+        commands::review::create_reconciliation,
+        commands::review::get_reconciliation,
+        commands::review::set_reconciled_posting,
+        commands::review::confirm_reconciliation,
+        commands::review::reopen_reconciliation,
+        commands::review::get_reconciliation_audit,
+        commands::review::get_ledger_quality,
+        commands::subscriptions::list_subscriptions,
+        commands::subscriptions::get_subscription,
+        commands::subscriptions::create_subscription,
+        commands::subscriptions::update_subscription,
+        commands::subscriptions::revise_subscription_price,
+        commands::subscriptions::change_subscription_status,
+        commands::subscriptions::list_subscription_occurrences,
+        commands::subscriptions::override_subscription_occurrence,
+        commands::subscriptions::reconcile_subscription_occurrence,
+        commands::subscriptions::reconcile_subscription_batch,
+        commands::subscriptions::match_subscription_occurrence,
+        commands::subscriptions::unlink_subscription_occurrence,
+    ])
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Must be the first plugin: a second launch focuses the existing window and
@@ -52,7 +144,7 @@ pub fn run() {
         );
     }
 
-    let app = builder
+    let app = with_commands(builder)
         .setup(|app| {
             // Boot completes before the window exists, so no screen can render
             // ahead of storage and migrations.
@@ -79,27 +171,6 @@ pub fn run() {
                 .build()?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            commands::system::get_app_status,
-            commands::system::get_system_info,
-            commands::system::get_storage_status,
-            commands::profile::get_profile,
-            commands::ledger::list_accounts,
-            commands::ledger::list_categories,
-            commands::ledger::list_financial_events,
-            commands::subscriptions::list_subscriptions,
-            commands::subscriptions::get_subscription,
-            commands::subscriptions::create_subscription,
-            commands::subscriptions::update_subscription,
-            commands::subscriptions::revise_subscription_price,
-            commands::subscriptions::change_subscription_status,
-            commands::subscriptions::list_subscription_occurrences,
-            commands::subscriptions::override_subscription_occurrence,
-            commands::subscriptions::reconcile_subscription_occurrence,
-            commands::subscriptions::reconcile_subscription_batch,
-            commands::subscriptions::match_subscription_occurrence,
-            commands::subscriptions::unlink_subscription_occurrence,
-        ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-reopen-reconciliation"
+description = "Enables the reopen_reconciliation command without any pre-configured scope."
+commands.allow = ["reopen_reconciliation"]
+
+[[permission]]
+identifier = "deny-reopen-reconciliation"
+description = "Denies the reopen_reconciliation command without any pre-configured scope."
+commands.deny = ["reopen_reconciliation"]

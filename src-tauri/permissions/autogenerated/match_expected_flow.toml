@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-match-expected-flow"
+description = "Enables the match_expected_flow command without any pre-configured scope."
+commands.allow = ["match_expected_flow"]
+
+[[permission]]
+identifier = "deny-match-expected-flow"
+description = "Denies the match_expected_flow command without any pre-configured scope."
+commands.deny = ["match_expected_flow"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-create-expected-flow"
+description = "Enables the create_expected_flow command without any pre-configured scope."
+commands.allow = ["create_expected_flow"]
+
+[[permission]]
+identifier = "deny-create-expected-flow"
+description = "Denies the create_expected_flow command without any pre-configured scope."
+commands.deny = ["create_expected_flow"]

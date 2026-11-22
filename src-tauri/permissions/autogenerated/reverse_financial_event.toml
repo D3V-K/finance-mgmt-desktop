@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-reverse-financial-event"
+description = "Enables the reverse_financial_event command without any pre-configured scope."
+commands.allow = ["reverse_financial_event"]
+
+[[permission]]
+identifier = "deny-reverse-financial-event"
+description = "Denies the reverse_financial_event command without any pre-configured scope."
+commands.deny = ["reverse_financial_event"]
