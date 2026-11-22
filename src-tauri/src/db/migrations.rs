@@ -10,6 +10,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "planning_and_review",
         include_str!("../../migrations/002_planning_and_review.sql"),
     ),
+    (
+        "subscriptions",
+        include_str!("../../migrations/003_subscriptions.sql"),
+    ),
 ];
 
 pub fn migrate(db: &Database) -> Result<(), AppError> {
@@ -107,7 +111,7 @@ mod tests {
         for _ in 0..2 {
             let db = Database::open(&path).unwrap();
             migrate(&db).unwrap();
-            assert_eq!(db.current_migration_version().unwrap(), 2);
+            assert_eq!(db.current_migration_version().unwrap(), 3);
             db.with_conn(|conn| {
                 assert_eq!(
                     conn.query_row("SELECT id FROM local_profile", [], |r| r
@@ -118,12 +122,75 @@ mod tests {
                     conn.query_row("SELECT id FROM accounts", [], |r| r.get::<_, String>(0))?,
                     account_id
                 );
+                assert!(
+                    conn.prepare("SELECT 1 FROM sqlite_master WHERE name='subscriptions'")?
+                        .exists([])?
+                );
                 let foreign_keys: i64 = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
                 assert_eq!(foreign_keys, 1);
                 Ok(())
             })
             .unwrap();
         }
+    }
+
+    #[test]
+    fn upgrades_real_version_two_to_version_three_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("finance.sqlite");
+        let profile_id = Uuid::new_v4().to_string();
+        let account_id = Uuid::new_v4().to_string();
+        {
+            let db = Database::open(&path).unwrap();
+            db.with_conn_mut(|conn| {
+                let tx = conn.transaction()?;
+                tx.execute_batch("ALTER TABLE _schema_migrations ADD COLUMN checksum TEXT")?;
+                for (index, (name, sql)) in MIGRATIONS.iter().take(2).enumerate() {
+                    tx.execute_batch(sql)?;
+                    if index == 0 {
+                        tx.execute(
+                            "INSERT INTO local_profile (singleton,id) VALUES (1,?1)",
+                            [&profile_id],
+                        )?;
+                        tx.execute(
+                            "INSERT INTO accounts (id,name,kind,created_at) VALUES (?1,'Visa','CREDIT_CARD','2026-01-01')",
+                            [&account_id],
+                        )?;
+                    }
+                    tx.execute(
+                        "INSERT INTO _schema_migrations VALUES (?1,?2,'2026-01-01',?3)",
+                        params![index + 1, name, checksum(sql)],
+                    )?;
+                }
+                tx.commit()?;
+                Ok(())
+            })
+            .unwrap();
+        }
+        let db = Database::open(&path).unwrap();
+        assert_eq!(db.current_migration_version().unwrap(), 2);
+        migrate(&db).unwrap();
+        assert_eq!(db.current_migration_version().unwrap(), 3);
+        db.with_conn(|conn| {
+            assert_eq!(
+                conn.query_row("SELECT id FROM accounts", [], |r| r.get::<_, String>(0))?,
+                account_id
+            );
+            for table in [
+                "subscriptions",
+                "subscription_pause_windows",
+                "subscription_plan_revisions",
+                "subscription_occurrences",
+            ] {
+                assert!(
+                    conn.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1")?
+                        .exists([table])?,
+                    "missing table {table}"
+                );
+            }
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]
@@ -183,13 +250,13 @@ mod tests {
         assert_eq!(migrate(&db).unwrap_err().code, codes::MIGRATION_FAILED);
         db.with_conn(|conn| {
             conn.execute(
-                "INSERT INTO _schema_migrations VALUES (3,'future','2026-01-01','future')",
+                "INSERT INTO _schema_migrations VALUES (4,'future','2026-01-01','future')",
                 [],
             )?;
             Ok(())
         })
         .unwrap();
         assert_eq!(migrate(&db).unwrap_err().code, codes::DATABASE_TOO_NEW);
-        assert_eq!(db.current_migration_version().unwrap(), 3);
+        assert_eq!(db.current_migration_version().unwrap(), 4);
     }
 }

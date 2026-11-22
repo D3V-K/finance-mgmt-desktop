@@ -4,6 +4,21 @@ const COMMANDS: &[&str] = &[
     "get_system_info",
     "get_storage_status",
     "get_profile",
+    "list_accounts",
+    "list_categories",
+    "list_financial_events",
+    "list_subscriptions",
+    "get_subscription",
+    "create_subscription",
+    "update_subscription",
+    "revise_subscription_price",
+    "change_subscription_status",
+    "list_subscription_occurrences",
+    "override_subscription_occurrence",
+    "reconcile_subscription_occurrence",
+    "reconcile_subscription_batch",
+    "match_subscription_occurrence",
+    "unlink_subscription_occurrence",
 ];
 
 fn main() {

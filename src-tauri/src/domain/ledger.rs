@@ -485,7 +485,7 @@ pub(super) fn reversed(conn: &Connection, event_id: Uuid) -> Result<bool, AppErr
     )
 }
 
-fn make_event(
+pub(super) fn make_event(
     conn: &Connection,
     input: &EventInput,
     replaces: Option<Uuid>,
@@ -643,7 +643,7 @@ fn make_event(
     Ok(event)
 }
 
-fn reverse(conn: &Connection, event_id: Uuid, reason: &str) -> Result<Event, AppError> {
+pub(super) fn reverse(conn: &Connection, event_id: Uuid, reason: &str) -> Result<Event, AppError> {
     let original = event(conn, event_id)?;
     if original.is_reversal || reversed(conn, event_id)? {
         return Err(blocked("The event cannot be reversed again."));
@@ -724,6 +724,21 @@ impl Finance<'_> {
     ) -> Result<WriteResponse<Account>, AppError> {
         self.write(request, "archive_account", &(account_id, archived), |db| {
             account(db, account_id)?;
+            let today = profile_today(db)?;
+            if archived
+                && exists(
+                    db,
+                    "SELECT 1 FROM subscriptions
+                     WHERE account_id=?1
+                       AND (status <> 'canceled' OR canceled_effective_on > ?2)",
+                    params![key(&account_id), today],
+                )?
+            {
+                return Err(conflict(
+                    codes::SUBSCRIPTION_ACTIVE_REFERENCE,
+                    "Reassign or cancel subscriptions using this account before archiving it.",
+                ));
+            }
             db.execute("UPDATE accounts SET archived_at=CASE WHEN ?2 THEN COALESCE(archived_at,?3) END WHERE id=?1",
                 params![key(&account_id), archived, now()])?;
             account(db, account_id)
@@ -855,6 +870,19 @@ impl Finance<'_> {
             |db| {
                 let old = category(db, category_id)?;
                 if archived {
+                    let today = profile_today(db)?;
+                    if exists(
+                        db,
+                        "SELECT 1 FROM subscriptions
+                         WHERE category_id=?1
+                           AND (status <> 'canceled' OR canceled_effective_on > ?2)",
+                        params![key(&category_id), today],
+                    )? {
+                        return Err(conflict(
+                            codes::SUBSCRIPTION_ACTIVE_REFERENCE,
+                            "Reassign or cancel subscriptions using this category before archiving it.",
+                        ));
+                    }
                     db.execute(
                         "UPDATE categories SET archived_at=COALESCE(archived_at,?2) WHERE id=?1",
                         params![key(&category_id), now()],
@@ -1092,6 +1120,7 @@ fn category_used(db: &Connection, category_id: Uuid) -> Result<bool, AppError> {
         SELECT 1 FROM legacy_transactions WHERE category_id=?1 UNION ALL
         SELECT 1 FROM category_budgets WHERE category_id=?1 UNION ALL
         SELECT 1 FROM expected_flows WHERE budget_category_id=?1 UNION ALL
+        SELECT 1 FROM subscriptions WHERE category_id=?1 UNION ALL
         SELECT 1 FROM legacy_provenance WHERE category_id=?1",
         [key(&category_id)],
     )

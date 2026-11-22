@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-reconcile-subscription-occurrence"
+description = "Enables the reconcile_subscription_occurrence command without any pre-configured scope."
+commands.allow = ["reconcile_subscription_occurrence"]
+
+[[permission]]
+identifier = "deny-reconcile-subscription-occurrence"
+description = "Denies the reconcile_subscription_occurrence command without any pre-configured scope."
+commands.deny = ["reconcile_subscription_occurrence"]

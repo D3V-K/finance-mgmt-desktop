@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-override-subscription-occurrence"
+description = "Enables the override_subscription_occurrence command without any pre-configured scope."
+commands.allow = ["override_subscription_occurrence"]
+
+[[permission]]
+identifier = "deny-override-subscription-occurrence"
+description = "Denies the override_subscription_occurrence command without any pre-configured scope."
+commands.deny = ["override_subscription_occurrence"]

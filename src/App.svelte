@@ -1,9 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { getAppStatus, getProfile, getStorageStatus, getSystemInfo, toAppError } from './lib/commands';
+  import SubscriptionsView from './components/subscriptions/SubscriptionsView.svelte';
   import type { AppError, Profile, StorageStatus, SystemInfo } from './lib/types';
 
   type Phase = 'starting' | 'blocked' | 'ready';
+  type Section = 'overview' | 'subscriptions';
 
   /** Startup failures are terminal for this launch: copy explains the safe next step. */
   const BLOCKED_COPY: Record<string, { title: string; body: string }> = {
@@ -26,6 +28,8 @@
   };
 
   let phase = $state<Phase>('starting');
+  let activeSection = $state<Section>('overview');
+  let pendingReconciliations = $state(0);
   let startupError = $state<AppError | null>(null);
   let systemInfo = $state<SystemInfo | null>(null);
   let profile = $state<Profile | null>(null);
@@ -76,10 +80,33 @@
 </script>
 
 <main class="shell">
-  <header class="app-header">
+    <header class="app-header">
     <div class="header-brand">
       <span class="badge">Offline</span>
       <h1 class="app-title">Finance Desktop</h1>
+      {#if phase === 'ready'}
+        <nav class="primary-nav" aria-label="Primary sections">
+          <button
+            type="button"
+            class:active={activeSection === 'overview'}
+            aria-current={activeSection === 'overview' ? 'page' : undefined}
+            onclick={() => (activeSection = 'overview')}
+          >
+            Overview
+          </button>
+          <button
+            type="button"
+            class:active={activeSection === 'subscriptions'}
+            aria-current={activeSection === 'subscriptions' ? 'page' : undefined}
+            onclick={() => (activeSection = 'subscriptions')}
+          >
+            Subscriptions
+            {#if pendingReconciliations > 0}
+              <span class="nav-pill">{pendingReconciliations}</span>
+            {/if}
+          </button>
+        </nav>
+      {/if}
     </div>
     {#if systemInfo && profile}
       <div class="system-meta" data-testid="system-meta">
@@ -119,6 +146,11 @@
         <div class="loading-state" data-testid="loading-state">
           <p>Loading local status …</p>
         </div>
+      {:else if activeSection === 'subscriptions' && profile}
+        <SubscriptionsView
+          today={profile.today}
+          onpendingchange={(count) => (pendingReconciliations = count)}
+        />
       {:else if storageStatus}
         <div class="status-grid" data-testid="storage-grid">
           <div class="status-card">
@@ -182,6 +214,40 @@
     display: flex;
     align-items: center;
     gap: 0.75rem;
+  }
+
+  .primary-nav {
+    display: flex;
+    gap: 0.35rem;
+    margin-left: 1rem;
+  }
+
+  .primary-nav button {
+    border: 1px solid transparent;
+    background: transparent;
+    color: #475569;
+    font-weight: 600;
+    font-size: 0.875rem;
+    padding: 0.4rem 0.75rem;
+    border-radius: 6px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
+  .primary-nav button.active {
+    background: #eff6ff;
+    color: #1d4ed8;
+    border-color: #bfdbfe;
+  }
+
+  .nav-pill {
+    background: #d97706;
+    color: #ffffff;
+    font-size: 0.72rem;
+    padding: 0.05rem 0.4rem;
+    border-radius: 9999px;
   }
 
   .badge {

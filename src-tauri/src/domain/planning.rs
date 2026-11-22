@@ -1,6 +1,7 @@
 use super::cards::{card_commitments, day_of_month, funded, schedule, schedule_funding};
 use super::ledger::*;
 use super::review::{Position, nonnegative, position};
+use super::subscriptions::{self, ForeignCurrencySummary};
 use super::*;
 use crate::commands::wire::MAX_NAME_CHARS;
 use chrono::{Datelike, Days, Months};
@@ -149,6 +150,7 @@ pub struct Forecast {
     pub lowest_by_account: BTreeMap<Uuid, LowBalance>,
     pub coverage: String,
     pub overdue_schedule_ids: Vec<Uuid>,
+    pub unreconciled_foreign_subscriptions: Vec<ForeignCurrencySummary>,
     pub warnings: Vec<String>,
 }
 
@@ -175,6 +177,7 @@ pub struct Availability {
     pub remaining_discretionary_budget: Option<i64>,
     pub coverage: String,
     pub overdue_schedule_ids: Vec<Uuid>,
+    pub unreconciled_foreign_subscriptions: Vec<ForeignCurrencySummary>,
     pub warnings: Vec<String>,
 }
 
@@ -487,6 +490,10 @@ fn bills(
                 .map(|_| -flow.terms.amount),
         );
     }
+    let sub_bills = subscriptions::confirmed_jpy_bills_in_range(db, category_id, from, to)?;
+    if sub_bills > 0 {
+        charges.push(sub_bills);
+    }
     total(charges)
 }
 
@@ -593,8 +600,15 @@ fn forecast(
     let all = cash_accounts(db)?;
     let flows = flow_list(db)?;
     let mut movements = expected_movements(db, &flows, from, to, scenario)?;
+    let sub_forecast = subscriptions::forecast_items(db, from, to)?;
+    for (account_id, on, movement) in sub_forecast.movements {
+        movements
+            .entry((account_id, on))
+            .or_default()
+            .push(movement);
+    }
     let card_timing = budget_movements(db, &flows, from, to, cfg.payday_day, &mut movements)?;
-    let mut missing_bank = false;
+    let mut missing_bank = sub_forecast.missing_card_settings;
     let mut overdue_schedule_ids = Vec::new();
     for commitment in card_commitments(db, from, to)? {
         let overdue = commitment.due_date < from;
@@ -700,6 +714,14 @@ fn forecast(
     if days.iter().any(|day| day.intraday_order_uncertain) {
         warnings.push("Same-day clearing order is unknown".into());
     }
+    for foreign in &sub_forecast.unreconciled_foreign {
+        warnings.push(format!(
+            "{} {} subscription charge(s) ({}) in this window await month-end JPY reconciliation and are excluded from JPY totals.",
+            foreign.count,
+            foreign.currency.as_str(),
+            foreign.currency.format_minor(foreign.total_minor)
+        ));
+    }
     Ok(Forecast {
         from,
         to,
@@ -719,6 +741,7 @@ fn forecast(
         }
         .into(),
         overdue_schedule_ids,
+        unreconciled_foreign_subscriptions: sub_forecast.unreconciled_foreign,
         warnings,
     })
 }
@@ -766,6 +789,11 @@ fn availability(
                 .iter()
                 .map(|_| -f.terms.amount),
         );
+    }
+    let sub_avail = subscriptions::availability_items(db, on, horizon)?;
+    missing_bank |= sub_avail.missing_card_settings;
+    for (account_id, amounts) in sub_avail.liquid_jpy_due {
+        bills_due.entry(account_id).or_default().extend(amounts);
     }
     let summary = budgets(db, on, Some(on))?;
     // A matched future posting replaces the planned bill and still consumes
@@ -868,6 +896,14 @@ fn availability(
     if incomplete_openings {
         warnings.push("Missing or incomplete account opening or cutover".into());
     }
+    for foreign in &sub_avail.unreconciled_foreign {
+        warnings.push(format!(
+            "{} {} subscription charge(s) ({}) due in this window await month-end JPY reconciliation and are excluded from spendable JPY.",
+            foreign.count,
+            foreign.currency.as_str(),
+            foreign.currency.format_minor(foreign.total_minor)
+        ));
+    }
     Ok(Availability {
         as_of_date: on,
         horizon,
@@ -885,6 +921,7 @@ fn availability(
         }
         .into(),
         overdue_schedule_ids,
+        unreconciled_foreign_subscriptions: sub_avail.unreconciled_foreign,
         warnings,
     })
 }

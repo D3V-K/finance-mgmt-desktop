@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-match-subscription-occurrence"
+description = "Enables the match_subscription_occurrence command without any pre-configured scope."
+commands.allow = ["match_subscription_occurrence"]
+
+[[permission]]
+identifier = "deny-match-subscription-occurrence"
+description = "Denies the match_subscription_occurrence command without any pre-configured scope."
+commands.deny = ["match_subscription_occurrence"]

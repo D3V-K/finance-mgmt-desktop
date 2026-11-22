@@ -105,6 +105,39 @@ pub fn positive_yen(value: i64, field: &str) -> Result<i64, AppError> {
     Ok(value)
 }
 
+/// Strictly positive minor-unit amount (whole yen for JPY, integer cents for USD).
+pub fn positive_minor_units(value: i64, field: &str) -> Result<i64, AppError> {
+    positive_yen(value, field)
+}
+
+/// Supported subscription billing currencies.
+pub fn parse_currency(raw: &str, field: &str) -> Result<&'static str, AppError> {
+    match raw {
+        "JPY" => Ok("JPY"),
+        "USD" => Ok("USD"),
+        _ => Err(AppError::invalid(
+            codes::INVALID_CURRENCY,
+            field,
+            "Select JPY or USD.",
+        )),
+    }
+}
+
+/// Supported subscription billing cadences.
+pub fn parse_cadence(raw: &str, field: &str) -> Result<&'static str, AppError> {
+    match raw {
+        "weekly" => Ok("weekly"),
+        "monthly" => Ok("monthly"),
+        "quarterly" => Ok("quarterly"),
+        "yearly" => Ok("yearly"),
+        _ => Err(AppError::invalid(
+            codes::INVALID_CADENCE,
+            field,
+            "Select weekly, monthly, quarterly, or yearly.",
+        )),
+    }
+}
+
 /// Trimmed single-line text. `None` for optional empty input; never stores control characters.
 pub fn text(
     raw: Option<&str>,
@@ -265,5 +298,21 @@ mod tests {
         })
         .unwrap();
         assert_eq!(resp, serde_json::json!({ "isReplay": true, "result": 1 }));
+    }
+
+    #[test]
+    fn currency_and_cadence_validators_reject_unknown_values() {
+        assert_eq!(parse_currency("JPY", "currency").unwrap(), "JPY");
+        assert_eq!(parse_currency("USD", "currency").unwrap(), "USD");
+        let err = parse_currency("EUR", "currency").unwrap_err();
+        assert_eq!(err.code, codes::INVALID_CURRENCY);
+        assert_eq!(err.field.as_deref(), Some("currency"));
+
+        for valid in ["weekly", "monthly", "quarterly", "yearly"] {
+            assert_eq!(parse_cadence(valid, "cadence").unwrap(), valid);
+        }
+        let err = parse_cadence("daily", "cadence").unwrap_err();
+        assert_eq!(err.code, codes::INVALID_CADENCE);
+        assert_eq!(err.field.as_deref(), Some("cadence"));
     }
 }

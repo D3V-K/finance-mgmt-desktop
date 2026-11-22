@@ -15,6 +15,8 @@ pub mod codes {
     pub const INVALID_TEXT: &str = "INVALID_TEXT";
     pub const INVALID_PAGE: &str = "INVALID_PAGE";
     pub const INVALID_REQUEST: &str = "INVALID_REQUEST";
+    pub const INVALID_CURRENCY: &str = "INVALID_CURRENCY";
+    pub const INVALID_CADENCE: &str = "INVALID_CADENCE";
 
     // Domain rules (raised by #7; listed here so codes stay stable)
     pub const MISSING_OPENING: &str = "MISSING_OPENING";
@@ -22,6 +24,9 @@ pub mod codes {
     pub const UNRESOLVED_MAPPING: &str = "UNRESOLVED_MAPPING";
     pub const IDEMPOTENCY_CONFLICT: &str = "IDEMPOTENCY_CONFLICT";
     pub const NOT_FOUND: &str = "NOT_FOUND";
+    pub const SUBSCRIPTION_INACTIVE: &str = "SUBSCRIPTION_INACTIVE";
+    pub const SUBSCRIPTION_ACTIVE_REFERENCE: &str = "SUBSCRIPTION_ACTIVE_REFERENCE";
+    pub const OCCURRENCE_ALREADY_RECONCILED: &str = "OCCURRENCE_ALREADY_RECONCILED";
 
     // Storage and lifecycle (#6)
     pub const STORAGE_FAILURE: &str = "STORAGE_FAILURE";
