@@ -718,3 +718,490 @@ fn match_unlink_archive_guards_and_ledger_quality() {
     assert!(f.archive_account(id(), card, true).is_ok());
     assert!(f.archive_category(id(), cat, true).is_ok());
 }
+
+#[test]
+fn unlink_reconciled_charge_reverses_event_and_deletes_unconfirmed_schedule() {
+    let (_dir, db) = setup();
+    let f = Finance::new(&db);
+    let (bank, card, cat) = bootstrap_accounts(&f);
+
+    let bank_sub = f
+        .create_subscription(
+            id(),
+            CreateSubscriptionInput {
+                name: "Fiber".into(),
+                merchant: None,
+                account_id: bank,
+                category_id: cat,
+                currency: BillingCurrency::Jpy,
+                amount_minor: 1_500,
+                cadence: SubscriptionCadence::Monthly,
+                billing_day: Some(15),
+                billing_month: None,
+                start_date: day("2026-02-15"),
+                note: None,
+            },
+        )
+        .unwrap()
+        .result
+        .subscription
+        .id;
+
+    let card_sub = f
+        .create_subscription(
+            id(),
+            CreateSubscriptionInput {
+                name: "Cloud".into(),
+                merchant: None,
+                account_id: card,
+                category_id: cat,
+                currency: BillingCurrency::Usd,
+                amount_minor: 2000,
+                cadence: SubscriptionCadence::Monthly,
+                billing_day: Some(10),
+                billing_month: None,
+                start_date: day("2026-02-10"),
+                note: None,
+            },
+        )
+        .unwrap()
+        .result
+        .subscription
+        .id;
+
+    // Reconcile both bank JPY and card USD
+    let bank_rec = f
+        .reconcile_subscription_occurrence(
+            id(),
+            ReconcileOccurrenceInput {
+                subscription_id: bank_sub,
+                scheduled_date: day("2026-02-15"),
+                actual_jpy: None,
+                settled_on: day("2026-02-15"),
+                occurred_on: None,
+                billed_amount_minor: None,
+                create_card_schedule: None,
+                description: None,
+            },
+        )
+        .unwrap()
+        .result;
+    let card_rec = f
+        .reconcile_subscription_occurrence(
+            id(),
+            ReconcileOccurrenceInput {
+                subscription_id: card_sub,
+                scheduled_date: day("2026-02-10"),
+                actual_jpy: Some(3_100),
+                settled_on: day("2026-02-12"),
+                occurred_on: None,
+                billed_amount_minor: None,
+                create_card_schedule: Some(true),
+                description: None,
+            },
+        )
+        .unwrap()
+        .result;
+    assert_eq!(
+        f.account_balance(bank, day("2026-02-20")).unwrap().balance,
+        Some(198_500)
+    );
+    assert_eq!(
+        f.account_balance(card, day("2026-02-20"))
+            .unwrap()
+            .amount_owed,
+        Some(3_100)
+    );
+    assert_eq!(f.card_schedules(card).unwrap().len(), 1);
+    assert!(card_rec.occurrence.schedule_id.is_some());
+
+    // Unlink both -> events reversed, unconfirmed card schedule deleted, no double counting
+    f.unlink_subscription_occurrence(
+        id(),
+        UnlinkOccurrenceInput {
+            subscription_id: bank_sub,
+            scheduled_date: day("2026-02-15"),
+        },
+    )
+    .unwrap();
+    f.unlink_subscription_occurrence(
+        id(),
+        UnlinkOccurrenceInput {
+            subscription_id: card_sub,
+            scheduled_date: day("2026-02-10"),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        f.account_balance(bank, day("2026-02-20")).unwrap().balance,
+        Some(200_000)
+    );
+    assert_eq!(
+        f.account_balance(card, day("2026-02-20"))
+            .unwrap()
+            .amount_owed,
+        Some(0)
+    );
+    assert!(f.card_schedules(card).unwrap().is_empty());
+
+    // Forecast after unlink shows exactly one -1,500 on Feb 15 (not doubled)
+    let fc = f
+        .cash_forecast(day("2026-02-01"), day("2026-02-20"), false)
+        .unwrap();
+    let feb15 = fc
+        .days
+        .iter()
+        .find(|d| d.account_id == bank && d.date == day("2026-02-15"))
+        .unwrap();
+    let net_feb15: i64 = feb15.movements.iter().map(|m| m.amount).sum();
+    assert_eq!(net_feb15, -1_500);
+    assert_eq!(bank_rec.event.amount, 1_500);
+
+    // Reconciling card again and confirming its statement blocks unlinking
+    let re_card = f
+        .reconcile_subscription_occurrence(
+            id(),
+            ReconcileOccurrenceInput {
+                subscription_id: card_sub,
+                scheduled_date: day("2026-02-10"),
+                actual_jpy: Some(3_150),
+                settled_on: day("2026-02-12"),
+                occurred_on: None,
+                billed_amount_minor: None,
+                create_card_schedule: Some(true),
+                description: None,
+            },
+        )
+        .unwrap()
+        .result;
+    let sched_id = re_card.occurrence.schedule_id.unwrap();
+    f.confirm_card_statement(
+        id(),
+        StatementInput {
+            card_id: card,
+            closing_on: day("2026-02-15"),
+            due_date: day("2026-03-10"),
+            principal_confirmed: 3_150,
+            schedule_ids: vec![sched_id],
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        f.unlink_subscription_occurrence(
+            id(),
+            UnlinkOccurrenceInput {
+                subscription_id: card_sub,
+                scheduled_date: day("2026-02-10"),
+            },
+        )
+        .unwrap_err()
+        .category,
+        ErrorCategory::Conflict
+    );
+}
+
+#[test]
+fn pause_windows_persist_across_resume_and_cancel_and_drop_moved_scheduled_rows() {
+    let (_dir, db) = setup();
+    let f = Finance::new(&db);
+    let (_bank, card, cat) = bootstrap_accounts(&f);
+
+    let sub_id = f
+        .create_subscription(
+            id(),
+            CreateSubscriptionInput {
+                name: "Notion".into(),
+                merchant: Some("Notion".into()),
+                account_id: card,
+                category_id: cat,
+                currency: BillingCurrency::Usd,
+                amount_minor: 1000,
+                cadence: SubscriptionCadence::Monthly,
+                billing_day: Some(10),
+                billing_month: None,
+                start_date: day("2026-01-10"),
+                note: None,
+            },
+        )
+        .unwrap()
+        .result
+        .subscription
+        .id;
+
+    // Move Dec 10 -> Dec 12 (creates a stored scheduled row)
+    f.override_subscription_occurrence(
+        id(),
+        OccurrenceOverrideInput {
+            subscription_id: sub_id,
+            scheduled_date: day("2026-12-10"),
+            override_date: Some(day("2026-12-12")),
+            skipped: false,
+        },
+    )
+    .unwrap();
+
+    // Pause from 2026-03-01, then resume on 2026-07-01
+    f.change_subscription_status(
+        id(),
+        StatusChangeInput {
+            subscription_id: sub_id,
+            status: SubscriptionStatus::Paused,
+            effective_on: day("2026-03-01"),
+        },
+    )
+    .unwrap();
+
+    // Paused subscription must still block archiving its account and category
+    assert_eq!(
+        f.archive_account(id(), card, true).unwrap_err().code,
+        codes::SUBSCRIPTION_ACTIVE_REFERENCE
+    );
+    assert_eq!(
+        f.archive_category(id(), cat, true).unwrap_err().code,
+        codes::SUBSCRIPTION_ACTIVE_REFERENCE
+    );
+
+    f.change_subscription_status(
+        id(),
+        StatusChangeInput {
+            subscription_id: sub_id,
+            status: SubscriptionStatus::Active,
+            effective_on: day("2026-07-01"),
+        },
+    )
+    .unwrap();
+
+    // March-June must stay excluded after resume
+    let occs = f
+        .list_subscription_occurrences(
+            day("2026-01-01"),
+            day("2026-08-31"),
+            day("2026-08-31"),
+            Some(sub_id),
+            false,
+        )
+        .unwrap();
+    let dates: Vec<_> = occs.iter().map(|o| o.scheduled_date).collect();
+    assert_eq!(
+        dates,
+        vec![
+            day("2026-01-10"),
+            day("2026-02-10"),
+            day("2026-07-10"),
+            day("2026-08-10"),
+        ]
+    );
+
+    // Cancel effective 2026-11-30 must drop the previously moved Dec 10 -> Dec 12 scheduled row
+    f.change_subscription_status(
+        id(),
+        StatusChangeInput {
+            subscription_id: sub_id,
+            status: SubscriptionStatus::Canceled,
+            effective_on: day("2026-11-30"),
+        },
+    )
+    .unwrap();
+    let dec = f
+        .list_subscription_occurrences(
+            day("2026-12-01"),
+            day("2026-12-31"),
+            day("2026-12-31"),
+            Some(sub_id),
+            false,
+        )
+        .unwrap();
+    assert!(dec.is_empty());
+}
+
+#[test]
+fn moved_cycle_picks_up_later_price_revision_and_card_jpy_reduces_available_cash() {
+    let (_dir, db) = setup();
+    let f = Finance::new(&db);
+    let (bank, card, cat) = bootstrap_accounts(&f);
+
+    let sub_id = f
+        .create_subscription(
+            id(),
+            CreateSubscriptionInput {
+                name: "Music".into(),
+                merchant: None,
+                account_id: card,
+                category_id: cat,
+                currency: BillingCurrency::Jpy,
+                amount_minor: 1_000,
+                cadence: SubscriptionCadence::Monthly,
+                billing_day: Some(10),
+                billing_month: None,
+                start_date: day("2026-11-10"),
+                note: None,
+            },
+        )
+        .unwrap()
+        .result
+        .subscription
+        .id;
+
+    // Move Dec 10 -> Dec 12, then revise price effective Dec 1 to ¥1,200
+    f.override_subscription_occurrence(
+        id(),
+        OccurrenceOverrideInput {
+            subscription_id: sub_id,
+            scheduled_date: day("2026-12-10"),
+            override_date: Some(day("2026-12-12")),
+            skipped: false,
+        },
+    )
+    .unwrap();
+    f.revise_subscription_price(
+        id(),
+        PriceRevisionInput {
+            subscription_id: sub_id,
+            effective_from: day("2026-12-01"),
+            amount_minor: 1_200,
+            reason: "Price increase".into(),
+        },
+    )
+    .unwrap();
+
+    let dec = f
+        .list_subscription_occurrences(
+            day("2026-12-01"),
+            day("2026-12-31"),
+            day("2026-12-01"),
+            Some(sub_id),
+            false,
+        )
+        .unwrap();
+    assert_eq!(dec.len(), 1);
+    assert_eq!(dec[0].effective_date, day("2026-12-12"));
+    assert_eq!(dec[0].billed_amount_minor, 1_200);
+
+    // Reconciling with actual_jpy: None must use the revised ¥1,200 (not stale ¥1,000)
+    let rec = f
+        .reconcile_subscription_occurrence(
+            id(),
+            ReconcileOccurrenceInput {
+                subscription_id: sub_id,
+                scheduled_date: day("2026-12-10"),
+                actual_jpy: None,
+                settled_on: day("2026-12-12"),
+                occurred_on: None,
+                billed_amount_minor: None,
+                create_card_schedule: Some(false),
+                description: None,
+            },
+        )
+        .unwrap()
+        .result;
+    assert_eq!(rec.event.amount, 1_200);
+
+    // Nov 10 card cycle (¥1,000, closes Nov 15, due Dec 10 on bank) must reduce available cash on bank
+    let avail = f
+        .available_cash(day("2026-11-01"), day("2026-12-15"))
+        .unwrap();
+    let bank_avail = avail
+        .accounts
+        .iter()
+        .find(|a| a.account_id == bank)
+        .unwrap();
+    assert_eq!(bank_avail.unfunded_known_due, 1_000);
+    assert_eq!(bank_avail.spendable, Some(199_000));
+}
+
+#[test]
+fn future_cancel_stays_visible_until_effective_date_and_jpy_does_not_raise_quality_issue() {
+    let (_dir, db) = setup();
+    let f = Finance::new(&db);
+    let (bank, card, cat) = bootstrap_accounts(&f);
+
+    // Historical start date: create_subscription response must use profile today for next_billing_date
+    let created = f
+        .create_subscription(
+            id(),
+            CreateSubscriptionInput {
+                name: "Streaming JPY".into(),
+                merchant: None,
+                account_id: bank,
+                category_id: cat,
+                currency: BillingCurrency::Jpy,
+                amount_minor: 980,
+                cadence: SubscriptionCadence::Monthly,
+                billing_day: Some(15),
+                billing_month: None,
+                start_date: day("2026-01-15"),
+                note: None,
+            },
+        )
+        .unwrap()
+        .result;
+    assert_ne!(created.next_billing_date, Some(day("2026-01-15")));
+
+    // Past-due unrecorded JPY subscription must NOT raise unreconciled_subscription in ledger_quality
+    let issues = f.ledger_quality(day("2026-04-10")).unwrap();
+    assert!(
+        !issues.iter().any(
+            |i| i.kind == "unreconciled_subscription" && i.record_id == created.subscription.id
+        )
+    );
+
+    // Future-dated cancellation (effective 2027-01-31) remains active in overview as of 2026-11-22
+    let usd_sub = f
+        .create_subscription(
+            id(),
+            CreateSubscriptionInput {
+                name: "Future Cancel USD".into(),
+                merchant: None,
+                account_id: card,
+                category_id: cat,
+                currency: BillingCurrency::Usd,
+                amount_minor: 1500,
+                cadence: SubscriptionCadence::Monthly,
+                billing_day: Some(15),
+                billing_month: None,
+                start_date: day("2026-11-15"),
+                note: None,
+            },
+        )
+        .unwrap()
+        .result
+        .subscription
+        .id;
+
+    f.change_subscription_status(
+        id(),
+        StatusChangeInput {
+            subscription_id: usd_sub,
+            status: SubscriptionStatus::Canceled,
+            effective_on: day("2027-01-31"),
+        },
+    )
+    .unwrap();
+
+    // Future-canceled subscription still blocks archiving card C on today (2026-11-22 < 2027-01-31)
+    assert_eq!(
+        f.archive_account(id(), card, true).unwrap_err().code,
+        codes::SUBSCRIPTION_ACTIVE_REFERENCE
+    );
+
+    let nov_overview = f.list_subscriptions(false, day("2026-11-22")).unwrap();
+    let item = nov_overview
+        .items
+        .iter()
+        .find(|i| i.subscription.id == usd_sub)
+        .expect("future-canceled subscription must stay visible before effective_on");
+    assert_eq!(item.next_billing_date, Some(day("2026-12-15")));
+    assert_eq!(nov_overview.foreign_monthly_normalized.len(), 1);
+    assert_eq!(nov_overview.foreign_monthly_normalized[0].total_minor, 1500);
+
+    // On/after 2027-01-31, it drops out of default overview and foreign totals
+    let feb_overview = f.list_subscriptions(false, day("2027-02-01")).unwrap();
+    assert!(
+        !feb_overview
+            .items
+            .iter()
+            .any(|i| i.subscription.id == usd_sub)
+    );
+    assert!(feb_overview.foreign_monthly_normalized.is_empty());
+}

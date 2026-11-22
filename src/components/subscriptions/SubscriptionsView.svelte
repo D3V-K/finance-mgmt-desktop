@@ -250,7 +250,10 @@
 
     batchSubmitting = true;
     try {
-      const req = pendingBatchWrite ?? newWrite<ReconcileBatchInput>({ items });
+      const canReusePending =
+        pendingBatchWrite !== null &&
+        JSON.stringify(pendingBatchWrite.payload.items) === JSON.stringify(items);
+      const req = canReusePending ? pendingBatchWrite! : newWrite<ReconcileBatchInput>({ items });
       pendingBatchWrite = req;
       const res = await reconcileSubscriptionBatch(req);
       pendingBatchWrite = null;
@@ -292,6 +295,7 @@
 
   async function handleSkip(occ: SubscriptionOccurrence, skipped: boolean) {
     error = null;
+    pendingBatchWrite = null;
     try {
       await overrideSubscriptionOccurrence(
         newWrite({
@@ -477,7 +481,11 @@
           <span>Show all unreconciled (past 12 months)</span>
         </label>
         <label class="checkbox-label">
-          <input type="checkbox" bind:checked={includeJpyInReconcile} />
+          <input
+            type="checkbox"
+            bind:checked={includeJpyInReconcile}
+            onchange={() => (pendingBatchWrite = null)}
+          />
           <span>Include unrecorded JPY subscriptions</span>
         </label>
       </div>
@@ -587,6 +595,7 @@
                     type="button"
                     class="link-btn"
                     onclick={() => {
+                      pendingBatchWrite = null;
                       matchingOccurrence = occ;
                       matchOpen = true;
                     }}
@@ -661,7 +670,11 @@
                     <strong>{item.name}</strong>
                     <div class="row-meta">
                       <span>{item.accountName}</span> · <span>{item.cadence}</span>
-                      {#if item.status !== 'active'}
+                      {#if item.canceledEffectiveOn && item.canceledEffectiveOn > today}
+                        · <span class="tag tag-muted">cancels {item.canceledEffectiveOn}</span>
+                      {:else if item.pausedFrom && item.pausedFrom > today}
+                        · <span class="tag tag-muted">pauses {item.pausedFrom}</span>
+                      {:else if item.status !== 'active'}
                         · <span class="tag tag-muted">{item.status}</span>
                       {/if}
                     </div>

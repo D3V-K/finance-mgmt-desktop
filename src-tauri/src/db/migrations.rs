@@ -178,6 +178,7 @@ mod tests {
             );
             for table in [
                 "subscriptions",
+                "subscription_pause_windows",
                 "subscription_plan_revisions",
                 "subscription_occurrences",
             ] {

@@ -791,6 +791,7 @@ fn availability(
         );
     }
     let sub_avail = subscriptions::availability_items(db, on, horizon)?;
+    missing_bank |= sub_avail.missing_card_settings;
     for (account_id, amounts) in sub_avail.liquid_jpy_due {
         bills_due.entry(account_id).or_default().extend(amounts);
     }

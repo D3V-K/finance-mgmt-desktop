@@ -189,4 +189,78 @@ describe('SubscriptionsView', () => {
     expect(seenKeys).toHaveLength(2);
     expect(seenKeys[0]).toBe(seenKeys[1]);
   });
+
+  it('mints a fresh batch payload and key when toggling JPY rows after a failed batch attempt', async () => {
+    const jpyOcc: SubscriptionOccurrence = {
+      subscriptionId: SUB_JPY_ID,
+      subscriptionName: 'iCloud+',
+      merchant: 'Apple',
+      accountId: CARD_ID,
+      accountName: 'Visa Card',
+      accountKind: 'CREDIT_CARD',
+      hasCardSettings: true,
+      categoryId: CAT_ID,
+      categoryName: 'Subscriptions',
+      scheduledDate: '2026-11-05',
+      overrideDate: null,
+      effectiveDate: '2026-11-05',
+      status: 'due',
+      billedCurrency: 'JPY',
+      billedAmountMinor: 1300,
+      actualJpy: null,
+      settledOn: null,
+      eventId: null,
+      scheduleId: null,
+      lastReconciledJpy: 1300,
+    };
+
+    const requests: Array<{ idempotencyKey: string; count: number }> = [];
+
+    setMockInvoker(async (cmd, args) => {
+      if (cmd === 'list_subscriptions') return makeOverview(1);
+      if (cmd === 'list_accounts') return sampleAccounts;
+      if (cmd === 'list_categories') return sampleCategories;
+      if (cmd === 'list_subscription_occurrences') return [makePendingOccurrence(), jpyOcc];
+      if (cmd === 'get_subscription') {
+        const sub = makeOverview(1).items[0]!;
+        return { subscription: sub, revisions: [], occurrences: [] } satisfies SubscriptionDetail;
+      }
+      if (cmd === 'reconcile_subscription_batch') {
+        const req = (
+          args as { request: { idempotencyKey: string; payload: { items: unknown[] } } }
+        ).request;
+        requests.push({ idempotencyKey: req.idempotencyKey, count: req.payload.items.length });
+        if (requests.length === 1) {
+          throw {
+            code: 'STORAGE_UNAVAILABLE',
+            message: 'Busy',
+            category: 'storage',
+          } satisfies AppError;
+        }
+        return { isReplay: false, result: [{ occurrence: makePendingOccurrence(), event: {} }] };
+      }
+      throw new Error(`unexpected command: ${cmd}`);
+    });
+
+    render(SubscriptionsView, { props: { today: '2026-11-22' } });
+
+    const usdInput = (await screen.findByLabelText(
+      'Actual JPY deducted for ChatGPT Plus on 2026-11-15',
+    )) as HTMLInputElement;
+    await fireEvent.input(usdInput, { target: { value: '3142' } });
+
+    // Enable JPY rows -> both USD and JPY (pre-filled 1300) are in the first failed attempt
+    const jpyToggle = screen.getByLabelText('Include unrecorded JPY subscriptions');
+    await fireEvent.click(jpyToggle);
+    await fireEvent.click(screen.getByRole('button', { name: /Reconcile Entered \(2\)/i }));
+    expect(await screen.findByTestId('sub-error-banner')).toHaveTextContent('STORAGE_UNAVAILABLE');
+    expect(requests[0]?.count).toBe(2);
+
+    // Untick JPY toggle -> retry must send only the 1 USD item with a NEW idempotencyKey
+    await fireEvent.click(jpyToggle);
+    await fireEvent.click(screen.getByRole('button', { name: /Reconcile Entered \(1\)/i }));
+    await waitFor(() => expect(requests).toHaveLength(2));
+    expect(requests[1]?.count).toBe(1);
+    expect(requests[1]?.idempotencyKey).not.toBe(requests[0]?.idempotencyKey);
+  });
 });

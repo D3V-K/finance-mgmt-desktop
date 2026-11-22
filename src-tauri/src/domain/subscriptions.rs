@@ -309,6 +309,13 @@ pub struct UnlinkOccurrenceInput {
 }
 
 #[derive(Debug, Clone)]
+struct PauseWindow {
+    id: Uuid,
+    paused_from: NaiveDate,
+    resumed_on: Option<NaiveDate>,
+}
+
+#[derive(Debug, Clone)]
 struct StoredOccurrence {
     override_date: Option<NaiveDate>,
     state: OccurrenceDbState,
@@ -318,6 +325,7 @@ struct StoredOccurrence {
     settled_on: Option<NaiveDate>,
     event_id: Option<Uuid>,
     schedule_id: Option<Uuid>,
+    created_by_reconcile: bool,
 }
 
 fn month_start(on: NaiveDate) -> NaiveDate {
@@ -362,20 +370,62 @@ fn load_subscription(db: &Connection, subscription_id: Uuid) -> Result<Subscript
     )?)
 }
 
-fn load_subscriptions(
-    db: &Connection,
-    include_canceled: bool,
-) -> Result<Vec<Subscription>, AppError> {
+fn load_all_subscriptions(db: &Connection) -> Result<Vec<Subscription>, AppError> {
     rows(
         db,
         "SELECT id,name,merchant,account_id,category_id,currency,cadence,billing_day,billing_month,
                 start_date,status,paused_from,canceled_effective_on,note,created_at,updated_at
          FROM subscriptions
-         WHERE ?1 OR status <> 'canceled'
          ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END, name, id",
-        [include_canceled],
+        [],
         subscription_row,
     )
+}
+
+fn load_pause_windows(
+    db: &Connection,
+    subscription_id: Uuid,
+) -> Result<Vec<PauseWindow>, AppError> {
+    rows(
+        db,
+        "SELECT id,paused_from,resumed_on FROM subscription_pause_windows
+         WHERE subscription_id=?1 ORDER BY paused_from ASC, id ASC",
+        [key(&subscription_id)],
+        |r| {
+            Ok(PauseWindow {
+                id: id(r, 0)?,
+                paused_from: r.get(1)?,
+                resumed_on: r.get(2)?,
+            })
+        },
+    )
+}
+
+fn is_paused_on(windows: &[PauseWindow], on: NaiveDate) -> bool {
+    windows
+        .iter()
+        .any(|w| on >= w.paused_from && w.resumed_on.is_none_or(|r| on < r))
+}
+
+fn is_excluded_by_status(sub: &Subscription, windows: &[PauseWindow], on: NaiveDate) -> bool {
+    if sub.canceled_effective_on.is_some_and(|c| on >= c) {
+        return true;
+    }
+    is_paused_on(windows, on)
+}
+
+fn effective_status_as_of(
+    sub: &Subscription,
+    windows: &[PauseWindow],
+    as_of_date: NaiveDate,
+) -> SubscriptionStatus {
+    if sub.canceled_effective_on.is_some_and(|c| as_of_date >= c) {
+        return SubscriptionStatus::Canceled;
+    }
+    if is_paused_on(windows, as_of_date) {
+        return SubscriptionStatus::Paused;
+    }
+    SubscriptionStatus::Active
 }
 
 fn load_revisions(db: &Connection, subscription_id: Uuid) -> Result<Vec<PlanRevision>, AppError> {
@@ -425,7 +475,7 @@ fn load_stored_occurrences(
         (Some(from), Some(to)) => rows(
             db,
             "SELECT scheduled_date,override_date,state,billed_currency,billed_amount_minor,
-                    actual_jpy,settled_on,event_id,schedule_id
+                    actual_jpy,settled_on,event_id,schedule_id,created_by_reconcile
              FROM subscription_occurrences
              WHERE subscription_id=?1
                AND (scheduled_date BETWEEN ?2 AND ?3 OR override_date BETWEEN ?2 AND ?3)",
@@ -435,7 +485,7 @@ fn load_stored_occurrences(
         _ => rows(
             db,
             "SELECT scheduled_date,override_date,state,billed_currency,billed_amount_minor,
-                    actual_jpy,settled_on,event_id,schedule_id
+                    actual_jpy,settled_on,event_id,schedule_id,created_by_reconcile
              FROM subscription_occurrences
              WHERE subscription_id=?1",
             [key(&subscription_id)],
@@ -459,6 +509,7 @@ fn parse_stored_occurrence(
             settled_on: r.get(6)?,
             event_id: optional_id(r, 7)?,
             schedule_id: optional_id(r, 8)?,
+            created_by_reconcile: r.get(9)?,
         },
     ))
 }
@@ -471,7 +522,7 @@ fn load_stored_occurrence(
     Ok(db
         .query_row(
             "SELECT scheduled_date,override_date,state,billed_currency,billed_amount_minor,
-                    actual_jpy,settled_on,event_id,schedule_id
+                    actual_jpy,settled_on,event_id,schedule_id,created_by_reconcile
              FROM subscription_occurrences
              WHERE subscription_id=?1 AND scheduled_date=?2",
             params![key(&subscription_id), scheduled_date],
@@ -502,21 +553,14 @@ fn last_reconciled(
         .unwrap_or((None, None)))
 }
 
-fn active_end_exclusive(sub: &Subscription) -> Option<NaiveDate> {
-    match sub.status {
-        SubscriptionStatus::Active => None,
-        SubscriptionStatus::Paused => sub.paused_from,
-        SubscriptionStatus::Canceled => sub.canceled_effective_on,
-    }
-}
-
 fn generated_dates(
     sub: &Subscription,
+    windows: &[PauseWindow],
     from: NaiveDate,
     to: NaiveDate,
 ) -> Result<Vec<NaiveDate>, AppError> {
     let mut upper = to;
-    if let Some(stop) = active_end_exclusive(sub) {
+    if let Some(stop) = sub.canceled_effective_on {
         if stop <= from {
             return Ok(Vec::new());
         }
@@ -539,7 +583,7 @@ fn generated_dates(
                 .checked_add_days(Days::new((weeks * 7) as u64))
                 .ok_or_else(|| invalid("to", "Date range is too large."))?;
             while current <= upper {
-                if current >= from {
+                if current >= from && !is_excluded_by_status(sub, windows, current) {
                     out.push(current);
                 }
                 current = match current.checked_add_days(Days::new(7)) {
@@ -553,7 +597,11 @@ fn generated_dates(
             let mut month = month_start(from.max(sub.start_date));
             while month <= upper {
                 let on = clamped_day(month, anchor_day);
-                if on >= sub.start_date && on >= from && on <= upper {
+                if on >= sub.start_date
+                    && on >= from
+                    && on <= upper
+                    && !is_excluded_by_status(sub, windows, on)
+                {
                     out.push(on);
                 }
                 month = match month.checked_add_months(Months::new(1)) {
@@ -581,7 +629,11 @@ fn generated_dates(
             }
             while month <= upper {
                 let on = clamped_day(month, anchor_day);
-                if on >= sub.start_date && on >= from && on <= upper {
+                if on >= sub.start_date
+                    && on >= from
+                    && on <= upper
+                    && !is_excluded_by_status(sub, windows, on)
+                {
                     out.push(on);
                 }
                 month = match month.checked_add_months(Months::new(3)) {
@@ -596,7 +648,11 @@ fn generated_dates(
             for year in from.max(sub.start_date).year()..=upper.year() {
                 if let Some(month) = NaiveDate::from_ymd_opt(year, anchor_month, 1) {
                     let on = clamped_day(month, anchor_day);
-                    if on >= sub.start_date && on >= from && on <= upper {
+                    if on >= sub.start_date
+                        && on >= from
+                        && on <= upper
+                        && !is_excluded_by_status(sub, windows, on)
+                    {
                         out.push(on);
                     }
                 }
@@ -606,13 +662,8 @@ fn generated_dates(
     Ok(out)
 }
 
-fn is_valid_scheduled_date(sub: &Subscription, target: NaiveDate) -> bool {
-    if target < sub.start_date {
-        return false;
-    }
-    if let Some(stop) = active_end_exclusive(sub)
-        && target >= stop
-    {
+fn is_valid_scheduled_date(sub: &Subscription, windows: &[PauseWindow], target: NaiveDate) -> bool {
+    if target < sub.start_date || is_excluded_by_status(sub, windows, target) {
         return false;
     }
     match sub.cadence {
@@ -637,6 +688,17 @@ fn is_valid_scheduled_date(sub: &Subscription, target: NaiveDate) -> bool {
     }
 }
 
+fn resolved_billed_amount(
+    revisions: &[PlanRevision],
+    row: Option<&StoredOccurrence>,
+    scheduled_date: NaiveDate,
+) -> Result<i64, AppError> {
+    if let Some(occ) = row.filter(|r| r.state == OccurrenceDbState::Reconciled) {
+        return Ok(occ.billed_amount_minor);
+    }
+    amount_for_date(revisions, scheduled_date)
+}
+
 fn build_occurrences_for_subscription(
     db: &Connection,
     sub: &Subscription,
@@ -645,6 +707,7 @@ fn build_occurrences_for_subscription(
     as_of_date: NaiveDate,
 ) -> Result<Vec<SubscriptionOccurrence>, AppError> {
     let revisions = load_revisions(db, sub.id)?;
+    let windows = load_pause_windows(db, sub.id)?;
     let stored = load_stored_occurrences(db, sub.id, Some(from), Some(to))?;
     let acc = account(db, sub.account_id)?;
     let cat = category(db, sub.category_id)?;
@@ -652,23 +715,29 @@ fn build_occurrences_for_subscription(
         acc.kind == AccountKind::CreditCard && card_settings_row(db, sub.account_id)?.is_some();
     let (last_jpy, _) = last_reconciled(db, sub.id)?;
 
-    let mut candidate_dates: BTreeSet<NaiveDate> =
-        generated_dates(sub, from, to)?.into_iter().collect();
+    let mut candidate_dates: BTreeSet<NaiveDate> = generated_dates(sub, &windows, from, to)?
+        .into_iter()
+        .collect();
     candidate_dates.extend(stored.keys().copied());
 
     let mut result = Vec::new();
     for scheduled_date in candidate_dates {
         let row = stored.get(&scheduled_date);
+        // Drop stored non-reconciled scheduled rows that fall in a pause window or after cancellation.
+        if matches!(
+            row.map(|r| r.state),
+            None | Some(OccurrenceDbState::Scheduled)
+        ) && is_excluded_by_status(sub, &windows, scheduled_date)
+        {
+            continue;
+        }
         let override_date = row.and_then(|r| r.override_date);
         let effective_date = override_date.unwrap_or(scheduled_date);
         if !(from..=to).contains(&effective_date) && !(from..=to).contains(&scheduled_date) {
             continue;
         }
         let billed_currency = row.map_or(sub.currency, |r| r.billed_currency);
-        let billed_amount_minor = match row {
-            Some(r) => r.billed_amount_minor,
-            None => amount_for_date(&revisions, scheduled_date)?,
-        };
+        let billed_amount_minor = resolved_billed_amount(&revisions, row, scheduled_date)?;
         let status = match row.map(|r| r.state) {
             Some(OccurrenceDbState::Skipped) => OccurrenceStatus::Skipped,
             Some(OccurrenceDbState::Reconciled) => OccurrenceStatus::Reconciled,
@@ -714,11 +783,13 @@ fn build_list_item(
     as_of_date: NaiveDate,
 ) -> Result<SubscriptionListItem, AppError> {
     let revisions = load_revisions(db, sub.id)?;
+    let windows = load_pause_windows(db, sub.id)?;
     let current_amount_minor = amount_for_date(&revisions, as_of_date)?;
     let acc = account(db, sub.account_id)?;
     let cat = category(db, sub.category_id)?;
     let (last_reconciled_jpy, last_reconciled_on) = last_reconciled(db, sub.id)?;
-    let next_billing_date = if sub.status == SubscriptionStatus::Active {
+    let effective_status = effective_status_as_of(sub, &windows, as_of_date);
+    let next_billing_date = if effective_status != SubscriptionStatus::Canceled {
         let horizon = as_of_date
             .checked_add_days(Days::new(NEXT_BILLING_LOOKAHEAD_DAYS as u64))
             .unwrap_or(as_of_date);
@@ -774,8 +845,11 @@ fn reconcile_occurrence_in_tx(
     }
 
     let sub = load_subscription(db, input.subscription_id)?;
+    let windows = load_pause_windows(db, sub.id)?;
     let stored = load_stored_occurrence(db, sub.id, input.scheduled_date)?;
-    if stored.is_none() && !is_valid_scheduled_date(&sub, input.scheduled_date) {
+    if is_excluded_by_status(&sub, &windows, input.scheduled_date)
+        || (stored.is_none() && !is_valid_scheduled_date(&sub, &windows, input.scheduled_date))
+    {
         return Err(invalid(
             "scheduledDate",
             "Select a scheduled billing date for this subscription.",
@@ -794,10 +868,7 @@ fn reconcile_occurrence_in_tx(
     }
 
     let revisions = load_revisions(db, sub.id)?;
-    let default_minor = stored
-        .as_ref()
-        .map(|s| s.billed_amount_minor)
-        .unwrap_or(amount_for_date(&revisions, input.scheduled_date)?);
+    let default_minor = resolved_billed_amount(&revisions, stored.as_ref(), input.scheduled_date)?;
     let billed_amount_minor = match input.billed_amount_minor {
         Some(v) => positive_minor_units(v, "billedAmountMinor")?,
         None => default_minor,
@@ -887,8 +958,8 @@ fn reconcile_occurrence_in_tx(
     db.execute(
         "INSERT INTO subscription_occurrences
             (id,subscription_id,scheduled_date,override_date,state,billed_currency,
-             billed_amount_minor,actual_jpy,settled_on,event_id,schedule_id,updated_at)
-         VALUES (?1,?2,?3,?4,'reconciled',?5,?6,?7,?8,?9,?10,?11)
+             billed_amount_minor,actual_jpy,settled_on,event_id,schedule_id,created_by_reconcile,updated_at)
+         VALUES (?1,?2,?3,?4,'reconciled',?5,?6,?7,?8,?9,?10,1,?11)
          ON CONFLICT(subscription_id,scheduled_date) DO UPDATE SET
             state='reconciled',
             billed_currency=excluded.billed_currency,
@@ -897,6 +968,7 @@ fn reconcile_occurrence_in_tx(
             settled_on=excluded.settled_on,
             event_id=excluded.event_id,
             schedule_id=excluded.schedule_id,
+            created_by_reconcile=1,
             updated_at=excluded.updated_at",
         params![
             key(&occ_id),
@@ -913,7 +985,8 @@ fn reconcile_occurrence_in_tx(
         ],
     )?;
 
-    let occurrence = single_occurrence_view(db, &sub, input.scheduled_date, input.settled_on)?;
+    let today = profile_today(db)?;
+    let occurrence = single_occurrence_view(db, &sub, input.scheduled_date, today)?;
     Ok(ReconciledCharge { occurrence, event })
 }
 
@@ -933,10 +1006,7 @@ fn single_occurrence_view(
     let override_date = stored.as_ref().and_then(|s| s.override_date);
     let effective_date = override_date.unwrap_or(scheduled_date);
     let billed_currency = stored.as_ref().map_or(sub.currency, |s| s.billed_currency);
-    let billed_amount_minor = match stored {
-        Some(ref r) => r.billed_amount_minor,
-        None => amount_for_date(&revisions, scheduled_date)?,
-    };
+    let billed_amount_minor = resolved_billed_amount(&revisions, stored.as_ref(), scheduled_date)?;
     let status = match stored.as_ref().map(|s| s.state) {
         Some(OccurrenceDbState::Skipped) => OccurrenceStatus::Skipped,
         Some(OccurrenceDbState::Reconciled) => OccurrenceStatus::Reconciled,
@@ -1014,7 +1084,7 @@ pub(super) fn forecast_items(
     from: NaiveDate,
     to: NaiveDate,
 ) -> Result<SubscriptionForecastBundle, AppError> {
-    let subs = load_subscriptions(db, true)?;
+    let subs = load_all_subscriptions(db)?;
     let mut movements = Vec::new();
     let mut missing_card_settings = false;
     let mut foreign_entries = Vec::new();
@@ -1085,6 +1155,7 @@ pub(super) fn forecast_items(
 
 pub(super) struct SubscriptionAvailabilityBundle {
     pub liquid_jpy_due: BTreeMap<Uuid, Vec<i64>>,
+    pub missing_card_settings: bool,
     pub unreconciled_foreign: Vec<ForeignCurrencySummary>,
 }
 
@@ -1093,12 +1164,20 @@ pub(super) fn availability_items(
     on: NaiveDate,
     horizon: NaiveDate,
 ) -> Result<SubscriptionAvailabilityBundle, AppError> {
-    let subs = load_subscriptions(db, true)?;
+    let subs = load_all_subscriptions(db)?;
     let mut liquid_jpy_due = BTreeMap::<Uuid, Vec<i64>>::new();
+    let mut missing_card_settings = false;
     let mut foreign_entries = Vec::new();
+    let card_lookback = on.checked_sub_days(Days::new(65)).unwrap_or(on);
+
     for sub in &subs {
         let acc = account(db, sub.account_id)?;
-        let occurrences = build_occurrences_for_subscription(db, sub, on, horizon, on)?;
+        let scan_from = if acc.kind == AccountKind::CreditCard {
+            card_lookback
+        } else {
+            on
+        };
+        let occurrences = build_occurrences_for_subscription(db, sub, scan_from, horizon, on)?;
         for occ in occurrences {
             if matches!(
                 occ.status,
@@ -1106,21 +1185,35 @@ pub(super) fn availability_items(
             ) {
                 continue;
             }
-            if !(on..=horizon).contains(&occ.effective_date) {
+            if occ.billed_currency.is_foreign() {
+                if (on..=horizon).contains(&occ.effective_date) {
+                    foreign_entries.push((occ.billed_currency, occ.billed_amount_minor));
+                }
                 continue;
             }
-            if occ.billed_currency.is_foreign() {
-                foreign_entries.push((occ.billed_currency, occ.billed_amount_minor));
-            } else if acc.kind.liquid() {
-                liquid_jpy_due
-                    .entry(sub.account_id)
-                    .or_default()
-                    .push(occ.billed_amount_minor);
+            if acc.kind.liquid() {
+                if (on..=horizon).contains(&occ.effective_date) {
+                    liquid_jpy_due
+                        .entry(sub.account_id)
+                        .or_default()
+                        .push(occ.billed_amount_minor);
+                }
+            } else if let Some(cfg) = card_settings_row(db, sub.account_id)? {
+                let due = next_due_date(cfg.closing_day, cfg.payment_day, occ.effective_date)?;
+                if (on..=horizon).contains(&due) {
+                    liquid_jpy_due
+                        .entry(cfg.settlement_account_id)
+                        .or_default()
+                        .push(occ.billed_amount_minor);
+                }
+            } else if (on..=horizon).contains(&occ.effective_date) {
+                missing_card_settings = true;
             }
         }
     }
     Ok(SubscriptionAvailabilityBundle {
         liquid_jpy_due,
+        missing_card_settings,
         unreconciled_foreign: summarize_foreign(foreign_entries)?,
     })
 }
@@ -1131,7 +1224,7 @@ pub(super) fn confirmed_jpy_bills_in_range(
     from: NaiveDate,
     to: NaiveDate,
 ) -> Result<i64, AppError> {
-    let subs = load_subscriptions(db, true)?;
+    let subs = load_all_subscriptions(db)?;
     let mut charges = Vec::new();
     for sub in subs
         .into_iter()
@@ -1173,14 +1266,17 @@ pub(super) fn quality_issues(
         });
     }
 
-    // 2. Unreconciled occurrences from completed prior months (before current month start).
+    // 2. Unreconciled foreign-currency occurrences from completed prior months.
     let current_month_start = month_start(on);
     if let Some(prev_end) = current_month_start.pred_opt() {
         let lookback_start = current_month_start
             .checked_sub_months(Months::new(12))
             .unwrap_or(prev_end);
-        let subs = load_subscriptions(db, true)?;
+        let subs = load_all_subscriptions(db)?;
         for sub in &subs {
+            if !sub.currency.is_foreign() {
+                continue;
+            }
             let scan_from = lookback_start.max(sub.start_date);
             if scan_from > prev_end {
                 continue;
@@ -1188,10 +1284,7 @@ pub(super) fn quality_issues(
             let occurrences = build_occurrences_for_subscription(db, sub, scan_from, prev_end, on)?;
             let has_overdue = occurrences.iter().any(|occ| {
                 occ.effective_date < current_month_start
-                    && matches!(
-                        occ.status,
-                        OccurrenceStatus::NeedsReconciliation | OccurrenceStatus::Due
-                    )
+                    && occ.status == OccurrenceStatus::NeedsReconciliation
             });
             if has_overdue {
                 issues.push(QualityIssue {
@@ -1214,13 +1307,19 @@ impl Finance<'_> {
     ) -> Result<SubscriptionOverview, AppError> {
         date(as_of_date)?;
         self.read(|db| {
-            let subs = load_subscriptions(db, include_canceled)?;
-            let mut items = Vec::with_capacity(subs.len());
+            let all_subs = load_all_subscriptions(db)?;
+            let mut items = Vec::new();
             let mut jpy_monthly_parts = Vec::new();
             let mut foreign_monthly_parts = Vec::new();
-            for sub in &subs {
+
+            for sub in &all_subs {
+                let windows = load_pause_windows(db, sub.id)?;
+                let eff_status = effective_status_as_of(sub, &windows, as_of_date);
+                if !include_canceled && eff_status == SubscriptionStatus::Canceled {
+                    continue;
+                }
                 let item = build_list_item(db, sub, as_of_date)?;
-                if sub.status == SubscriptionStatus::Active {
+                if eff_status == SubscriptionStatus::Active {
                     let normalized = sub
                         .cadence
                         .monthly_normalized_minor(item.current_amount_minor)?;
@@ -1239,7 +1338,6 @@ impl Finance<'_> {
                 .checked_sub_months(Months::new(12))
                 .unwrap_or(this_month_start);
 
-            let all_subs = load_subscriptions(db, true)?;
             let mut jpy_due_parts = Vec::new();
             let mut pending_reconciliation_count = 0usize;
             for sub in &all_subs {
@@ -1415,7 +1513,8 @@ impl Finance<'_> {
                 ],
             )?;
             let sub = load_subscription(db, sub_id)?;
-            build_list_item(db, &sub, input.start_date)
+            let today = profile_today(db)?;
+            build_list_item(db, &sub, today)
         })
     }
 
@@ -1444,7 +1543,8 @@ impl Finance<'_> {
                 ],
             )?;
             let updated = load_subscription(db, existing.id)?;
-            build_list_item(db, &updated, updated.start_date)
+            let today = profile_today(db)?;
+            build_list_item(db, &updated, today)
         })
     }
 
@@ -1520,6 +1620,9 @@ impl Finance<'_> {
                     "Effective date cannot precede the subscription start date.",
                 ));
             }
+            let windows = load_pause_windows(db, sub.id)?;
+            let open_window = windows.iter().find(|w| w.resumed_on.is_none()).cloned();
+
             let (paused_from, canceled_effective_on) = match input.status {
                 SubscriptionStatus::Active => {
                     if sub.status == SubscriptionStatus::Canceled {
@@ -1527,6 +1630,26 @@ impl Finance<'_> {
                             codes::SUBSCRIPTION_INACTIVE,
                             "Canceled subscriptions cannot be reactivated; create a new subscription instead.",
                         ));
+                    }
+                    validate_account_and_category(db, sub.account_id, sub.category_id)?;
+                    if let Some(open) = open_window {
+                        if input.effective_on < open.paused_from {
+                            return Err(invalid(
+                                "effectiveOn",
+                                "Resume date cannot precede the pause start date.",
+                            ));
+                        }
+                        if input.effective_on == open.paused_from {
+                            db.execute(
+                                "DELETE FROM subscription_pause_windows WHERE id=?1",
+                                [key(&open.id)],
+                            )?;
+                        } else {
+                            db.execute(
+                                "UPDATE subscription_pause_windows SET resumed_on=?2 WHERE id=?1",
+                                params![key(&open.id), input.effective_on],
+                            )?;
+                        }
                     }
                     (None, None)
                 }
@@ -1537,9 +1660,46 @@ impl Finance<'_> {
                             "Canceled subscriptions cannot be paused.",
                         ));
                     }
+                    if windows
+                        .iter()
+                        .filter_map(|w| w.resumed_on)
+                        .any(|resumed| input.effective_on < resumed)
+                    {
+                        return Err(invalid(
+                            "effectiveOn",
+                            "Pause date cannot overlap an earlier pause window.",
+                        ));
+                    }
+                    if let Some(open) = open_window {
+                        db.execute(
+                            "UPDATE subscription_pause_windows SET paused_from=?2 WHERE id=?1",
+                            params![key(&open.id), input.effective_on],
+                        )?;
+                    } else {
+                        db.execute(
+                            "INSERT INTO subscription_pause_windows (id,subscription_id,paused_from,resumed_on)
+                             VALUES (?1,?2,?3,NULL)",
+                            params![key(&Uuid::new_v4()), key(&sub.id), input.effective_on],
+                        )?;
+                    }
                     (Some(input.effective_on), None)
                 }
-                SubscriptionStatus::Canceled => (None, Some(input.effective_on)),
+                SubscriptionStatus::Canceled => {
+                    if let Some(open) = open_window {
+                        if input.effective_on > open.paused_from {
+                            db.execute(
+                                "UPDATE subscription_pause_windows SET resumed_on=?2 WHERE id=?1",
+                                params![key(&open.id), input.effective_on],
+                            )?;
+                        } else {
+                            db.execute(
+                                "DELETE FROM subscription_pause_windows WHERE id=?1",
+                                [key(&open.id)],
+                            )?;
+                        }
+                    }
+                    (None, Some(input.effective_on))
+                }
             };
             db.execute(
                 "UPDATE subscriptions SET status=?2,paused_from=?3,canceled_effective_on=?4,updated_at=?5
@@ -1553,7 +1713,8 @@ impl Finance<'_> {
                 ],
             )?;
             let updated = load_subscription(db, sub.id)?;
-            build_list_item(db, &updated, input.effective_on)
+            let today = profile_today(db)?;
+            build_list_item(db, &updated, today)
         })
     }
 
@@ -1570,7 +1731,7 @@ impl Finance<'_> {
         self.read(|db| {
             let subs = match subscription_id {
                 Some(id) => vec![load_subscription(db, id)?],
-                None => load_subscriptions(db, true)?,
+                None => load_all_subscriptions(db)?,
             };
             let mut list = Vec::new();
             for sub in &subs {
@@ -1613,8 +1774,12 @@ impl Finance<'_> {
                 ));
             }
             let sub = load_subscription(db, input.subscription_id)?;
+            let windows = load_pause_windows(db, sub.id)?;
             let existing = load_stored_occurrence(db, sub.id, input.scheduled_date)?;
-            if existing.is_none() && !is_valid_scheduled_date(&sub, input.scheduled_date) {
+            if is_excluded_by_status(&sub, &windows, input.scheduled_date)
+                || (existing.is_none()
+                    && !is_valid_scheduled_date(&sub, &windows, input.scheduled_date))
+            {
                 return Err(invalid(
                     "scheduledDate",
                     "Select a scheduled billing date for this subscription.",
@@ -1631,10 +1796,7 @@ impl Finance<'_> {
             }
 
             let revisions = load_revisions(db, sub.id)?;
-            let billed_amount_minor = existing
-                .as_ref()
-                .map(|e| e.billed_amount_minor)
-                .unwrap_or(amount_for_date(&revisions, input.scheduled_date)?);
+            let billed_amount_minor = amount_for_date(&revisions, input.scheduled_date)?;
             let state = if input.skipped {
                 OccurrenceDbState::Skipped
             } else {
@@ -1643,11 +1805,12 @@ impl Finance<'_> {
             db.execute(
                 "INSERT INTO subscription_occurrences
                     (id,subscription_id,scheduled_date,override_date,state,billed_currency,
-                     billed_amount_minor,actual_jpy,settled_on,event_id,schedule_id,updated_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,NULL,NULL,NULL,NULL,?8)
+                     billed_amount_minor,actual_jpy,settled_on,event_id,schedule_id,created_by_reconcile,updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,NULL,NULL,NULL,NULL,0,?8)
                  ON CONFLICT(subscription_id,scheduled_date) DO UPDATE SET
                     override_date=excluded.override_date,
                     state=excluded.state,
+                    billed_amount_minor=excluded.billed_amount_minor,
                     updated_at=excluded.updated_at",
                 params![
                     key(&Uuid::new_v4()),
@@ -1660,12 +1823,8 @@ impl Finance<'_> {
                     now()
                 ],
             )?;
-            single_occurrence_view(
-                db,
-                &sub,
-                input.scheduled_date,
-                input.override_date.unwrap_or(input.scheduled_date),
-            )
+            let today = profile_today(db)?;
+            single_occurrence_view(db, &sub, input.scheduled_date, today)
         })
     }
 
@@ -1716,8 +1875,12 @@ impl Finance<'_> {
         self.write(request, "match_subscription_occurrence", &input, |db| {
             date(input.scheduled_date)?;
             let sub = load_subscription(db, input.subscription_id)?;
+            let windows = load_pause_windows(db, sub.id)?;
             let existing = load_stored_occurrence(db, sub.id, input.scheduled_date)?;
-            if existing.is_none() && !is_valid_scheduled_date(&sub, input.scheduled_date) {
+            if is_excluded_by_status(&sub, &windows, input.scheduled_date)
+                || (existing.is_none()
+                    && !is_valid_scheduled_date(&sub, &windows, input.scheduled_date))
+            {
                 return Err(invalid(
                     "scheduledDate",
                     "Select a scheduled billing date for this subscription.",
@@ -1726,12 +1889,8 @@ impl Finance<'_> {
             if let Some(ref occ) = existing {
                 if occ.state == OccurrenceDbState::Reconciled {
                     if occ.event_id == Some(input.event_id) {
-                        return single_occurrence_view(
-                            db,
-                            &sub,
-                            input.scheduled_date,
-                            occ.settled_on.unwrap_or(input.scheduled_date),
-                        );
+                        let today = profile_today(db)?;
+                        return single_occurrence_view(db, &sub, input.scheduled_date, today);
                     }
                     return Err(conflict(
                         codes::OCCURRENCE_ALREADY_RECONCILED,
@@ -1745,10 +1904,7 @@ impl Finance<'_> {
 
             let e = event(db, input.event_id)?;
             if e.kind != EventKind::Expense || e.is_reversal || reversed(db, e.id)? {
-                return Err(invalid(
-                    "eventId",
-                    "Select a non-reversed expense event.",
-                ));
+                return Err(invalid("eventId", "Select a non-reversed expense event."));
             }
             let posting = e
                 .postings
@@ -1774,10 +1930,7 @@ impl Finance<'_> {
             let revisions = load_revisions(db, sub.id)?;
             let billed_amount_minor = match input.billed_amount_minor {
                 Some(v) => positive_minor_units(v, "billedAmountMinor")?,
-                None => existing
-                    .as_ref()
-                    .map(|s| s.billed_amount_minor)
-                    .unwrap_or(amount_for_date(&revisions, input.scheduled_date)?),
+                None => resolved_billed_amount(&revisions, existing.as_ref(), input.scheduled_date)?,
             };
             let override_date = existing.as_ref().and_then(|s| s.override_date);
             let linked_schedule: Option<Uuid> = db
@@ -1791,8 +1944,8 @@ impl Finance<'_> {
             db.execute(
                 "INSERT INTO subscription_occurrences
                     (id,subscription_id,scheduled_date,override_date,state,billed_currency,
-                     billed_amount_minor,actual_jpy,settled_on,event_id,schedule_id,updated_at)
-                 VALUES (?1,?2,?3,?4,'reconciled',?5,?6,?7,?8,?9,?10,?11)
+                     billed_amount_minor,actual_jpy,settled_on,event_id,schedule_id,created_by_reconcile,updated_at)
+                 VALUES (?1,?2,?3,?4,'reconciled',?5,?6,?7,?8,?9,?10,0,?11)
                  ON CONFLICT(subscription_id,scheduled_date) DO UPDATE SET
                     state='reconciled',
                     billed_amount_minor=excluded.billed_amount_minor,
@@ -1800,6 +1953,7 @@ impl Finance<'_> {
                     settled_on=excluded.settled_on,
                     event_id=excluded.event_id,
                     schedule_id=excluded.schedule_id,
+                    created_by_reconcile=0,
                     updated_at=excluded.updated_at",
                 params![
                     key(&Uuid::new_v4()),
@@ -1816,7 +1970,8 @@ impl Finance<'_> {
                 ],
             )?;
 
-            single_occurrence_view(db, &sub, input.scheduled_date, posting.effective_date)
+            let today = profile_today(db)?;
+            single_occurrence_view(db, &sub, input.scheduled_date, today)
         })
     }
 
@@ -1831,10 +1986,13 @@ impl Finance<'_> {
             let existing = load_stored_occurrence(db, sub.id, input.scheduled_date)?
                 .filter(|o| o.state == OccurrenceDbState::Reconciled)
                 .ok_or_else(missing)?;
+
+            // Reset/remove occurrence row first so foreign keys on schedule_id are released.
             if existing.override_date.is_some() {
                 db.execute(
                     "UPDATE subscription_occurrences
-                     SET state='scheduled',actual_jpy=NULL,settled_on=NULL,event_id=NULL,schedule_id=NULL,updated_at=?3
+                     SET state='scheduled',actual_jpy=NULL,settled_on=NULL,event_id=NULL,
+                         schedule_id=NULL,created_by_reconcile=0,updated_at=?3
                      WHERE subscription_id=?1 AND scheduled_date=?2",
                     params![key(&sub.id), input.scheduled_date, now()],
                 )?;
@@ -1844,12 +2002,45 @@ impl Finance<'_> {
                     params![key(&sub.id), input.scheduled_date],
                 )?;
             }
-            single_occurrence_view(
-                db,
-                &sub,
-                input.scheduled_date,
-                existing.settled_on.unwrap_or(input.scheduled_date),
-            )
+
+            // If reconcile created the event and optional card schedule, reverse/remove them
+            // atomically so the unlinked cycle is never double-counted.
+            if existing.created_by_reconcile {
+                if let Some(sched_id) = existing.schedule_id {
+                    let has_statement: bool = db
+                        .query_row(
+                            "SELECT statement_id IS NOT NULL FROM card_schedules WHERE id=?1",
+                            [key(&sched_id)],
+                            |r| r.get(0),
+                        )
+                        .optional()?
+                        .unwrap_or(false);
+                    if has_statement
+                        || exists(
+                            db,
+                            "SELECT 1 FROM card_applications WHERE schedule_id=?1
+                             UNION ALL
+                             SELECT 1 FROM funding_allocations WHERE schedule_id=?1
+                             UNION ALL
+                             SELECT 1 FROM expected_flows WHERE schedule_id=?1",
+                            [key(&sched_id)],
+                        )?
+                    {
+                        return Err(blocked(
+                            "Cannot unlink a reconciled charge whose card schedule is confirmed, applied, or reserved.",
+                        ));
+                    }
+                    db.execute("DELETE FROM card_schedules WHERE id=?1", [key(&sched_id)])?;
+                }
+                if let Some(ev_id) = existing.event_id
+                    && !reversed(db, ev_id)?
+                {
+                    reverse(db, ev_id, "Unlinked subscription reconciliation")?;
+                }
+            }
+
+            let today = profile_today(db)?;
+            single_occurrence_view(db, &sub, input.scheduled_date, today)
         })
     }
 }

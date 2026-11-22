@@ -20,6 +20,16 @@ CREATE TABLE subscriptions (
 );
 CREATE INDEX subscriptions_status_idx ON subscriptions(status, account_id);
 
+CREATE TABLE subscription_pause_windows (
+  id TEXT PRIMARY KEY,
+  subscription_id TEXT NOT NULL REFERENCES subscriptions(id) ON DELETE RESTRICT,
+  paused_from TEXT NOT NULL CHECK (length(paused_from) = 10),
+  resumed_on TEXT CHECK (resumed_on IS NULL OR length(resumed_on) = 10),
+  CHECK (resumed_on IS NULL OR resumed_on > paused_from)
+);
+CREATE INDEX sub_pause_windows_idx
+  ON subscription_pause_windows(subscription_id, paused_from);
+
 CREATE TABLE subscription_plan_revisions (
   id TEXT PRIMARY KEY,
   subscription_id TEXT NOT NULL REFERENCES subscriptions(id) ON DELETE RESTRICT,
@@ -53,11 +63,12 @@ CREATE TABLE subscription_occurrences (
   settled_on TEXT CHECK (settled_on IS NULL OR length(settled_on) = 10),
   event_id TEXT UNIQUE REFERENCES financial_events(id) ON DELETE RESTRICT,
   schedule_id TEXT REFERENCES card_schedules(id) ON DELETE RESTRICT,
+  created_by_reconcile INTEGER NOT NULL DEFAULT 0 CHECK (created_by_reconcile IN (0, 1)),
   updated_at TEXT NOT NULL,
   UNIQUE (subscription_id, scheduled_date),
   CHECK (
     (state = 'reconciled' AND event_id IS NOT NULL AND actual_jpy IS NOT NULL AND settled_on IS NOT NULL)
-    OR (state <> 'reconciled' AND event_id IS NULL AND actual_jpy IS NULL AND settled_on IS NULL)
+    OR (state <> 'reconciled' AND event_id IS NULL AND actual_jpy IS NULL AND settled_on IS NULL AND created_by_reconcile = 0)
   ),
   CHECK (state <> 'skipped' OR override_date IS NULL)
 );
