@@ -84,6 +84,21 @@ pub fn run() {
             commands::system::get_system_info,
             commands::system::get_storage_status,
             commands::profile::get_profile,
+            commands::ledger::list_accounts,
+            commands::ledger::list_categories,
+            commands::ledger::list_financial_events,
+            commands::subscriptions::list_subscriptions,
+            commands::subscriptions::get_subscription,
+            commands::subscriptions::create_subscription,
+            commands::subscriptions::update_subscription,
+            commands::subscriptions::revise_subscription_price,
+            commands::subscriptions::change_subscription_status,
+            commands::subscriptions::list_subscription_occurrences,
+            commands::subscriptions::override_subscription_occurrence,
+            commands::subscriptions::reconcile_subscription_occurrence,
+            commands::subscriptions::reconcile_subscription_batch,
+            commands::subscriptions::match_subscription_occurrence,
+            commands::subscriptions::unlink_subscription_occurrence,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

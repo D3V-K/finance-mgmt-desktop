@@ -8,6 +8,21 @@
     "allow-get-app-status",
     "allow-get-system-info",
     "allow-get-storage-status",
-    "allow-get-profile"
+    "allow-get-profile",
+    "allow-list-accounts",
+    "allow-list-categories",
+    "allow-list-financial-events",
+    "allow-list-subscriptions",
+    "allow-get-subscription",
+    "allow-create-subscription",
+    "allow-update-subscription",
+    "allow-revise-subscription-price",
+    "allow-change-subscription-status",
+    "allow-list-subscription-occurrences",
+    "allow-override-subscription-occurrence",
+    "allow-reconcile-subscription-occurrence",
+    "allow-reconcile-subscription-batch",
+    "allow-match-subscription-occurrence",
+    "allow-unlink-subscription-occurrence"
   ]
 }

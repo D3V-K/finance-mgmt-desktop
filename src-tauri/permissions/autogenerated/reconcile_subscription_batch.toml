@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-reconcile-subscription-batch"
+description = "Enables the reconcile_subscription_batch command without any pre-configured scope."
+commands.allow = ["reconcile_subscription_batch"]
+
+[[permission]]
+identifier = "deny-reconcile-subscription-batch"
+description = "Denies the reconcile_subscription_batch command without any pre-configured scope."
+commands.deny = ["reconcile_subscription_batch"]

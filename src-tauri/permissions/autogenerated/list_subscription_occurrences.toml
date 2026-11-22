@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-subscription-occurrences"
+description = "Enables the list_subscription_occurrences command without any pre-configured scope."
+commands.allow = ["list_subscription_occurrences"]
+
+[[permission]]
+identifier = "deny-list-subscription-occurrences"
+description = "Denies the list_subscription_occurrences command without any pre-configured scope."
+commands.deny = ["list_subscription_occurrences"]

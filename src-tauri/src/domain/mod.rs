@@ -33,6 +33,7 @@ pub mod ledger;
 pub mod legacy;
 pub mod planning;
 pub mod review;
+pub mod subscriptions;
 
 use crate::commands::wire::{positive_yen, text, yen};
 use crate::db::Database;

@@ -49,7 +49,7 @@ const devFallback: Record<string, () => unknown> = {
   get_app_status: () => ({ state: 'ready', error: null }) satisfies AppStatus,
   get_system_info: () => ({ appVersion: '0.1.0-dev', osTarget: 'browser-dev' }) satisfies SystemInfo,
   get_storage_status: () =>
-    ({ status: 'ready', databasePath: 'dev-preview', isWalEnabled: true, migrationVersion: 0 }) satisfies StorageStatus,
+    ({ status: 'ready', databasePath: 'dev-preview', isWalEnabled: true, migrationVersion: 3 }) satisfies StorageStatus,
   get_profile: () => ({ timeZone: 'Asia/Tokyo', today: tokyoToday() }) satisfies Profile,
 };
 
