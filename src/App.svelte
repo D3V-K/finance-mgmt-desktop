@@ -15,6 +15,7 @@
   import Reconciliation from './screens/Reconciliation.svelte';
   import Investments from './screens/Investments.svelte';
   import Quality from './screens/Quality.svelte';
+  import SubscriptionsView from './components/subscriptions/SubscriptionsView.svelte';
   import LedgerStart from './screens/LedgerStart.svelte';
   import QuickEntry from './screens/QuickEntry.svelte';
   import ShortcutHelp from './screens/ShortcutHelp.svelte';
@@ -45,6 +46,8 @@
   let startupError = $state<AppError | null>(null);
   let profileError = $state<AppError | null>(null);
   let storage = $state<StorageStatus | null>(null);
+  /** Due subscription charges awaiting month-end reconciliation (sidebar badge). */
+  let pendingReconciliations = $state(0);
 
   const blockedCopy = $derived(startupError ? (BLOCKED_COPY[startupError.code] ?? DEFAULT_BLOCKED) : DEFAULT_BLOCKED);
   const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
@@ -170,6 +173,9 @@
                   }}
                 >
                   <span>{item.label}</span>
+                  {#if item.name === 'subscriptions' && pendingReconciliations > 0}
+                    <span class="nav-pill" aria-label="{pendingReconciliations} to reconcile">{pendingReconciliations}</span>
+                  {/if}
                   {#if item.shortcut}<kbd aria-hidden="true">{mod}{item.shortcut}</kbd>{/if}
                 </a>
               </li>
@@ -242,6 +248,8 @@
           <Investments />
         {:else if app.route.name === 'quality'}
           <Quality />
+        {:else if app.route.name === 'subscriptions'}
+          <SubscriptionsView today={app.today} onpendingchange={(count) => (pendingReconciliations = count)} />
         {:else}
           <LedgerStart />
         {/if}
@@ -285,6 +293,7 @@
   nav a:hover { background: var(--surface); color: var(--ink); }
   nav a[aria-current='page'] { background: var(--surface); color: var(--ink); box-shadow: inset 3px 0 0 var(--accent), var(--shadow); }
   nav kbd { opacity: 0.7; }
+  .nav-pill { margin-left: auto; margin-right: var(--space-2); background: var(--accent); color: var(--surface); font-size: 0.72rem; padding: 0 0.4rem; border-radius: 9999px; }
   nav ul.planned { padding: var(--space-2) var(--space-2) 0; }
   .planned li { color: var(--ink-3); font-size: var(--text-sm); }
   .offline { margin-top: auto; display: flex; gap: var(--space-2); font-size: var(--text-xs); padding: var(--space-2); color: var(--ink-2); }

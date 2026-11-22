@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-revise-subscription-price"
+description = "Enables the revise_subscription_price command without any pre-configured scope."
+commands.allow = ["revise_subscription_price"]
+
+[[permission]]
+identifier = "deny-revise-subscription-price"
+description = "Denies the revise_subscription_price command without any pre-configured scope."
+commands.deny = ["revise_subscription_price"]

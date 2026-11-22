@@ -79,6 +79,18 @@
     "allow-confirm-reconciliation",
     "allow-reopen-reconciliation",
     "allow-get-reconciliation-audit",
-    "allow-get-ledger-quality"
+    "allow-get-ledger-quality",
+    "allow-list-subscriptions",
+    "allow-get-subscription",
+    "allow-create-subscription",
+    "allow-update-subscription",
+    "allow-revise-subscription-price",
+    "allow-change-subscription-status",
+    "allow-list-subscription-occurrences",
+    "allow-override-subscription-occurrence",
+    "allow-reconcile-subscription-occurrence",
+    "allow-reconcile-subscription-batch",
+    "allow-match-subscription-occurrence",
+    "allow-unlink-subscription-occurrence"
   ]
 }

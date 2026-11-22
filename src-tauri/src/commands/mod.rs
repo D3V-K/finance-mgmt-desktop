@@ -9,6 +9,7 @@ pub mod legacy;
 pub mod planning;
 pub mod profile;
 pub mod review;
+pub mod subscriptions;
 pub mod system;
 pub mod wire;
 
@@ -87,6 +88,18 @@ pub const COMMANDS: &[&str] = &[
     "reopen_reconciliation",
     "get_reconciliation_audit",
     "get_ledger_quality",
+    "list_subscriptions",
+    "get_subscription",
+    "create_subscription",
+    "update_subscription",
+    "revise_subscription_price",
+    "change_subscription_status",
+    "list_subscription_occurrences",
+    "override_subscription_occurrence",
+    "reconcile_subscription_occurrence",
+    "reconcile_subscription_batch",
+    "match_subscription_occurrence",
+    "unlink_subscription_occurrence",
 ];
 
 use crate::AppState;

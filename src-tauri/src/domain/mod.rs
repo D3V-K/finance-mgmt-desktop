@@ -33,6 +33,7 @@ pub mod ledger;
 pub mod legacy;
 pub mod planning;
 pub mod review;
+pub mod subscriptions;
 
 use crate::commands::wire::{positive_yen, text, yen};
 use crate::db::Database;
@@ -127,6 +128,21 @@ fn total(values: impl IntoIterator<Item = i64>) -> Result<i64, AppError> {
 
 fn now() -> String {
     Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
+}
+
+pub(super) fn profile_today(conn: &Connection) -> Result<NaiveDate, AppError> {
+    let zone: String = conn.query_row(
+        "SELECT time_zone FROM local_profile WHERE singleton=1",
+        [],
+        |r| r.get(0),
+    )?;
+    let tz: chrono_tz::Tz = zone.parse().map_err(|_| {
+        AppError::storage(
+            codes::STORAGE_FAILURE,
+            "The stored financial time zone is invalid.",
+        )
+    })?;
+    Ok(Utc::now().with_timezone(&tz).date_naive())
 }
 
 fn date(date: NaiveDate) -> Result<(), AppError> {

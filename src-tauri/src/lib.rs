@@ -112,6 +112,18 @@ pub fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Bu
         commands::review::reopen_reconciliation,
         commands::review::get_reconciliation_audit,
         commands::review::get_ledger_quality,
+        commands::subscriptions::list_subscriptions,
+        commands::subscriptions::get_subscription,
+        commands::subscriptions::create_subscription,
+        commands::subscriptions::update_subscription,
+        commands::subscriptions::revise_subscription_price,
+        commands::subscriptions::change_subscription_status,
+        commands::subscriptions::list_subscription_occurrences,
+        commands::subscriptions::override_subscription_occurrence,
+        commands::subscriptions::reconcile_subscription_occurrence,
+        commands::subscriptions::reconcile_subscription_batch,
+        commands::subscriptions::match_subscription_occurrence,
+        commands::subscriptions::unlink_subscription_occurrence,
     ])
 }
 

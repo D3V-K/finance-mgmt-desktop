@@ -1,6 +1,7 @@
 use super::ledger::*;
 use super::*;
 use crate::commands::wire::{MAX_DESCRIPTION_CHARS, MAX_NAME_CHARS};
+use chrono::{Datelike, Months};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -108,6 +109,82 @@ pub(super) fn day_of_month(day: u32) -> Result<(), AppError> {
         return Err(invalid("day", "Enter a day from 1 through 31."));
     }
     Ok(())
+}
+
+pub(super) fn card_settings_row(
+    db: &Connection,
+    card_id: Uuid,
+) -> Result<Option<CardSettings>, AppError> {
+    Ok(db
+        .query_row(
+            "SELECT settlement_account_id,closing_day,payment_day FROM card_settings WHERE card_id=?1",
+            [key(&card_id)],
+            |r| {
+                Ok(CardSettings {
+                    card_id,
+                    settlement_account_id: id(r, 0)?,
+                    closing_day: r.get(1)?,
+                    payment_day: r.get(2)?,
+                })
+            },
+        )
+        .optional()?)
+}
+
+/// Computes the card payment due date strictly after the closing date that
+/// captures `purchase_date`.
+pub(super) fn next_due_date(
+    closing_day: u32,
+    payment_day: u32,
+    purchase_date: NaiveDate,
+) -> Result<NaiveDate, AppError> {
+    let clamp = |month: NaiveDate, day: u32| -> NaiveDate {
+        (1..=day)
+            .rev()
+            .find_map(|d| month.with_day(d))
+            .expect("validated month and day")
+    };
+    let purchase_month = purchase_date.with_day(1).expect("valid month");
+    let closing_in_month = clamp(purchase_month, closing_day);
+    let closing_month = if purchase_date <= closing_in_month {
+        purchase_month
+    } else {
+        purchase_month
+            .checked_add_months(Months::new(1))
+            .ok_or_else(|| invalid("dueDate", "Date is too late."))?
+    };
+    let closing_on = clamp(closing_month, closing_day);
+    let candidate = clamp(closing_month, payment_day);
+    if candidate > closing_on {
+        Ok(candidate)
+    } else {
+        let next = closing_month
+            .checked_add_months(Months::new(1))
+            .ok_or_else(|| invalid("dueDate", "Date is too late."))?;
+        Ok(clamp(next, payment_day))
+    }
+}
+
+pub(super) fn insert_schedule(
+    db: &Connection,
+    terms: &ScheduleInput,
+) -> Result<Schedule, AppError> {
+    schedule_cap(db, terms, None)?;
+    let schedule_id = Uuid::new_v4();
+    db.execute(
+        "INSERT INTO card_schedules (id,card_id,purchase_event_id,opening_obligation,due_date,principal_due,source)
+         VALUES (?1,?2,?3,?4,?5,?6,?7)",
+        params![
+            key(&schedule_id),
+            key(&terms.card_id),
+            terms.purchase_event_id.as_ref().map(key),
+            terms.opening_obligation,
+            terms.due_date,
+            terms.principal_due,
+            terms.source.as_str()
+        ],
+    )?;
+    schedule(db, schedule_id, None)
 }
 
 fn card(db: &Connection, card_id: Uuid) -> Result<Account, AppError> {

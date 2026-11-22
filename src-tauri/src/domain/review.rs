@@ -685,6 +685,7 @@ impl Finance<'_> {
                     issues.push(QualityIssue { kind:format!("reconciliation_{status}"),record_id:session });
                 }
             }
+            issues.extend(super::subscriptions::quality_issues(db, on)?);
             Ok(issues)
         })
     }

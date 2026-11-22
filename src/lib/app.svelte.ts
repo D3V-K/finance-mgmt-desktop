@@ -11,6 +11,7 @@ export type Route =
   | { name: 'budgets' }
   | { name: 'cards'; cardId: Id | null }
   | { name: 'forecast' }
+  | { name: 'subscriptions' }
   | { name: 'reconciliation'; reconciliationId: Id | null }
   | { name: 'investments' }
   | { name: 'quality' }
@@ -40,6 +41,7 @@ export const NAV_GROUPS: { group: string; items: NavItem[] }[] = [
       { name: 'budgets', label: 'Budgets & savings', shortcut: '5' },
       { name: 'cards', label: 'Cards & statements', shortcut: '6' },
       { name: 'forecast', label: 'Forecast', shortcut: '7' },
+      { name: 'subscriptions', label: 'Subscriptions' },
     ],
   },
   {
